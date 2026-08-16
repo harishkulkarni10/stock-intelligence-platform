@@ -1,91 +1,127 @@
 # Stock Intelligence Platform
 
-Forecasting + agentic equity research. Layout mirrors [kmeanskaran/stock-agent-ops](https://github.com/kmeanskaran/stock-agent-ops); correctness and ops rules are ours.
+Production-style equity forecasting and agentic research: chronological LSTM
+training, artifact serving, and a LangGraph analyze workflow that grounds LLM
+reports in model forecasts and news tools.
 
-## Status
+## What's working
 
-Stage 1 forecasting is complete: chronological ingestion, parent/child LSTM training,
-price-space evaluation, champion gates, artifacts, inference, and API orchestration.
-Agent workflows remain Stage 2.
+- **Data:** yfinance OHLCV + RSI/MACD → validated parquet feature store  
+- **ML:** parent (`^GSPC`) / child transfer learning, price-space metrics, champion gates  
+- **Serving:** FastAPI train/predict/status + Redis-backed task/prediction cache  
+- **Agents:** `POST /analyze` — forecast tool → performance → news → report → critic  
+- **UI:** minimal Streamlit analyze app (`frontend/app.py`)  
+- **Colab:** GPU training notebook + `scripts/make_colab_bundle.py` handoff  
+
+Still ahead: deeper monitoring/drift/eval, full compose polish, cloud/K8s.
 
 ## Layout
 
 ```text
-backend/           FastAPI
-src/               data, model, pipelines, agents, memory, monitoring
-feature_store/     Feast
-frontend/          Streamlit (Stage 2)
-monitoring_app/    Streamlit (Stage 3)
-prometheus/ grafana/ k8s/
-doc/               design + reference notes
-outputs/ logs/     runtime (gitignored)
+backend/            FastAPI (health, ready, train, predict, analyze)
+src/
+  data/             ingestion + sequence preparation
+  model/            LSTM, train, evaluate, save/load
+  pipelines/        sip-data / sip-train / sip-predict
+  agents/           tools, nodes, LangGraph analyze
+  memory/           report cache (Redis TTL)
+  monitoring/       drift / agent eval (next)
+feature_store/      Feast definitions + offline parquet
+frontend/           Streamlit analyze UI
+notebooks/          Colab GPU training
+outputs/            model artifacts (gitignored)
+doc/                design notes
 ```
 
 ## Setup
 
-```bash
+```powershell
 cd "Stock Intelligence Platform"
 python -m venv .venv
-# Windows
 .\.venv\Scripts\activate
-pip install -e ".[dev]"
+pip install -e ".[dev,agents,ui]"
 copy .env.example .env
 ```
 
-## Run API (local)
+Install [Ollama](https://ollama.com) and pull a chat model (default in `.env`):
 
-```bash
-uvicorn backend.main:app --reload --port 8000
+```powershell
+ollama pull llama3.2:3b
 ```
 
-```bash
-curl http://localhost:8000/health
-curl http://localhost:8000/ready
-curl http://localhost:8000/
+Place trained weights under `outputs/parent/` (from Colab) or train locally.
+
+## Quick start (API)
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
-## Pipelines
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/health
+Invoke-RestMethod http://127.0.0.1:8000/ready
 
-Every stage is a CLI entrypoint; no ad-hoc scripting required.
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:8000/predict-parent `
+  -ContentType application/json `
+  -Body '{"ticker":"NVDA","horizon":5}'
+
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:8000/analyze `
+  -ContentType application/json `
+  -Body '{"ticker":"NVDA"}'
+```
+
+Interactive docs: http://127.0.0.1:8000/docs  
+
+Streamlit UI (API must be running):
+
+```powershell
+.\.venv\Scripts\streamlit.exe run frontend/app.py
+```
+
+## CLI pipelines
 
 | Stage | Command |
 |-------|---------|
-| Build feature store | `sip-data build --tickers ^GSPC NVDA` |
-| Inspect coverage and splits | `sip-data inspect` |
-| Materialize to online store | `sip-data materialize` |
+| Build features | `sip-data build --tickers ^GSPC NVDA` |
+| Inspect store | `sip-data inspect` |
+| Materialize online | `sip-data materialize` |
 | Train parent | `sip-train parent --source feature-store` |
 | Train child | `sip-train child --ticker NVDA --source feature-store` |
-| Predict | `sip-predict child --ticker NVDA --horizon 5` |
-| Analyze (agents) | `POST /analyze` with `{"ticker":"NVDA"}` |
+| Predict | `sip-predict parent --ticker NVDA --horizon 5` |
 | Serve | `sip-api` |
 
-`--source feature-store` fails loudly when data is absent. `auto` falls back to live
-ingestion, and `yfinance` bypasses the store entirely.
+`--source feature-store` requires parquet. `auto` falls back to live download; `yfinance` forces live fetch.
 
-## Train on Google Colab
+## Colab training
 
-1. Ensure the offline store exists (`sip-data build` / `sip-data inspect`).
-2. Build a Colab-safe ZIP with POSIX paths (**do not** use PowerShell `Compress-Archive`):
+1. `sip-data build` / `sip-data inspect` locally.  
+2. Bundle with POSIX paths (**not** `Compress-Archive`):
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\make_colab_bundle.py
 ```
 
-3. Upload `notebooks/colab_training.ipynb` to Colab, select a GPU runtime, then upload
-   `stock-intelligence-colab.zip` when the notebook asks.
-4. Train with `source="feature-store"` (uses the parquet in the ZIP; no live rebuild).
-5. Download `sip_colab_outputs.zip` and import into the project:
+3. Upload `notebooks/colab_training.ipynb` + `stock-intelligence-colab.zip` to Colab (GPU).  
+4. Download `sip_colab_outputs.zip` and unpack into `outputs/`.  
+
+Serving uses `outputs/parent/model.pt`. A child folder is written only when the champion gate promotes the child.
+
+## Analyze response (agents)
+
+`POST /analyze` returns a single DTO:
+
+- `predictions` — model forecast + history (from code, not the LLM)  
+- `performance_analysis` — performance agent  
+- `news_summary` — news agent  
+- `final_report` / `recommendation` / `confidence` — report + critic  
+
+Optional Redis report cache (`ANALYZE_CACHE_TTL_SECONDS`). News uses Finnhub when `FMI_API_KEY` is set; otherwise Yahoo.
+
+## Compose
 
 ```powershell
-Expand-Archive -Path sip_colab_outputs.zip -DestinationPath outputs -Force
-```
-
-Serving loads `outputs/parent/model.pt` and, only if promoted,
-`outputs/<TICKER>/model.pt`. Local retraining is not required.
-
-## Compose (infra)
-
-```bash
 docker compose up --build -d
 ```
 
@@ -97,30 +133,17 @@ docker compose up --build -d
 | Prometheus | http://localhost:9090 |
 | Grafana | http://localhost:3000 |
 
-Frontend / monitoring containers land in Stage 2–3.
+## Design principles
 
-## Reference
+- Chronological train/validation/test splits (no random window leakage)  
+- Scaler fit on train only; price-space evaluation + persistence baseline  
+- Redis via `backend.state.get_redis()` (no import-time client binding)  
+- `API_WORKERS=1` until an external job queue exists  
+- Offline parquet is the training authority; online Feast/Redis is optional for serve  
+- Agents interpret tool outputs; they do not invent forecast numbers  
 
-- Local clone: `../Stock Agent Ops clone/stock-agent-ops` (or your path)
-- `doc/KARANS_WORK_EXPLAINED.md`
-- `doc/GAP_MAP_KARAN_VS_OURS.md`
-- `doc/GREENFIELD_SCAFFOLD.md`
-- `doc/DESIGN.md`
+## Tests
 
-## Build order
-
-1. Scaffold ✓
-2. Data ingestion + Feast ✓
-3. Parent/child train + predict + Redis ✓ ← current
-4. Agents + `/analyze` + Streamlit
-5. Monitoring + drift/eval  
-6. Full compose + CI  
-7. K8s / cloud  
-
-## Ops rules (non-negotiable)
-
-- Redis via `backend.state.get_redis()`, not import-time binding  
-- `API_WORKERS=1` until a job queue exists  
-- Chronological ML splits; no random window split  
-- Feast or parquet is real train/serve source — not decoration  
-- Single analyze/predict DTO; pass `task_id` on training responses  
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```

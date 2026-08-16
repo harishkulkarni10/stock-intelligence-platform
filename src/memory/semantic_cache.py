@@ -50,5 +50,5 @@ class ReportCache:
             return
 
 
-# Backward-compatible name used in docs / Karan layout.
+# Alias for call sites that import SemanticCache.
 SemanticCache = ReportCache
