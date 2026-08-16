@@ -1,0 +1,42 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.env
+*.env
+
+logs/
+!logs/.gitkeep
+outputs/
+!outputs/.gitkeep
+mlruns/
+mlartifacts/
+mlflow.db
+
+feature_store/data/*
+!feature_store/data/.gitkeep
+*.db
+!feature_store/data/.gitkeep
+*.parquet
+
+# Local / Colab handoff bundles (rebuild with scripts/make_colab_bundle.py)
+*.zip
+stock-intelligence-colab.zip
+sip_colab_outputs.zip
+
+# Reference clone lives beside this repo; never commit if nested later
+Stock Agent Ops clone/
+**/stock-agent-ops/
+
+grafana/data/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.ipynb_checkpoints/

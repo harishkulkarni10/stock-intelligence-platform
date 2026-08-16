@@ -1,0 +1,84 @@
+networks:
+  app_network:
+    driver: bridge
+
+services:
+  fastapi:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: sip-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_URL=redis://redis:6379/0
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - API_WORKERS=1
+    depends_on:
+      - redis
+    volumes:
+      - .:/app
+      - ./outputs:/app/outputs
+      - ./feature_store:/app/feature_store
+    networks:
+      - app_network
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 1
+
+  redis:
+    image: redis/redis-stack:latest
+    container_name: sip-redis
+    ports:
+      - "6379:6379"
+      - "8001:8001"
+    volumes:
+      - redis_data:/data
+    networks:
+      - app_network
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: sip-qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - app_network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: sip-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - fastapi
+    networks:
+      - app_network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: sip-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-change-me}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    networks:
+      - app_network
+
+volumes:
+  redis_data:
+  qdrant_data:
+  grafana_data:
