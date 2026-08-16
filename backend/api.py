@@ -10,6 +10,8 @@ from fastapi import APIRouter, HTTPException, Response, status
 from backend import state, tasks
 from backend.rate_limiter import FixedWindowRateLimiter
 from backend.schemas import (
+    AnalyzeRequest,
+    AnalyzeResponse,
     HealthResponse,
     PredictionPoint,
     PredictionResult,
@@ -37,6 +39,7 @@ def root() -> dict:
             "train_child": "POST /train-child",
             "predict_parent": "POST /predict-parent",
             "predict_child": "POST /predict-child",
+            "analyze": "POST /analyze",
             "status": "GET /status/{task_id}",
             "docs": "GET /docs",
         },
@@ -163,3 +166,18 @@ def task_status(task_id: str) -> TaskStatus:
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return TaskStatus.model_validate(task)
+
+
+@router.post("/analyze", response_model=AnalyzeResponse)
+async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
+    _limit("analyze", request.ticker)
+
+    def run() -> dict[str, Any]:
+        from src.agents.graph import analyze_stock
+
+        return analyze_stock(request.ticker, request.thread_id)
+
+    result = await asyncio.get_running_loop().run_in_executor(state.executor, run)
+    if result.get("status") not in {"ok", "missing_model", "error", "training"}:
+        result = {**result, "status": result.get("status") or "error"}
+    return AnalyzeResponse.model_validate(result)

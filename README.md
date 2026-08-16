@@ -56,6 +56,7 @@ Every stage is a CLI entrypoint; no ad-hoc scripting required.
 | Train parent | `sip-train parent --source feature-store` |
 | Train child | `sip-train child --ticker NVDA --source feature-store` |
 | Predict | `sip-predict child --ticker NVDA --horizon 5` |
+| Analyze (agents) | `POST /analyze` with `{"ticker":"NVDA"}` |
 | Serve | `sip-api` |
 
 `--source feature-store` fails loudly when data is absent. `auto` falls back to live

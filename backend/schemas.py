@@ -67,3 +67,18 @@ class TaskStatus(BaseModel):
     status: str
     result: Any | None = None
     error: str | None = None
+
+
+class AnalyzeResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    status: str
+    ticker: str
+    final_report: str | None = None
+    recommendation: str | None = None
+    confidence: str | None = None
+    performance_analysis: str | None = None
+    news_summary: str | None = None
+    predictions: dict[str, Any] = Field(default_factory=dict)
+    cached: bool = False
+    detail: str | None = None
