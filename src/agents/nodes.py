@@ -92,7 +92,7 @@ End exactly with this line:
     recommendation, confidence = extract_stance_and_confidence(text)
     return {
         "messages": [AIMessage(content=text)],
-        "final_report": text,
+        "draft_report": text,
         "recommendation": recommendation,
         "confidence": confidence,
     }
@@ -114,7 +114,7 @@ NEWS SUMMARY:
 {state.get("news_summary", "")}
 
 DRAFT REPORT:
-{state.get("final_report", "")}
+{state.get("draft_report", "")}
 
 Tasks:
 1) Check Market Stance vs forecast direction.

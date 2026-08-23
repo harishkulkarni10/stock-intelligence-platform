@@ -15,6 +15,7 @@ class AgentState(MessagesState, total=False):
     news_raw: str
     performance_analysis: str
     news_summary: str
+    draft_report: str
     final_report: str
     recommendation: str
     confidence: str
@@ -28,6 +29,8 @@ class AnalyzeResult(TypedDict, total=False):
     confidence: str
     performance_analysis: str
     news_summary: str
+    news: dict[str, Any]
+    draft_report: str
     predictions: dict[str, Any]
     cached: bool
     detail: str

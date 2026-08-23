@@ -48,6 +48,11 @@ def test_analyze_stock_happy_path(monkeypatch):
                 "confidence": "Medium",
                 "performance_analysis": "Upward bias",
                 "news_summary": "Mixed news",
+                "news": {
+                    "provider": "test",
+                    "articles": [{"headline": "NVDA update", "date": "2026-08-14"}],
+                },
+                "draft_report": "Draft report",
             }
 
     monkeypatch.setattr(graph, "get_forecast", lambda ticker: forecast)
@@ -61,4 +66,6 @@ def test_analyze_stock_happy_path(monkeypatch):
     assert result["recommendation"] == "BULLISH"
     assert result["predictions"]["forecast"][0]["value"] == 101.0
     assert result["performance_analysis"] == "Upward bias"
+    assert result["news"]["provider"] == "test"
+    assert result["draft_report"] == "Draft report"
     assert result["cached"] is False

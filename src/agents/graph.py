@@ -61,6 +61,8 @@ def _analyze_dto(
         "confidence": graph_result.get("confidence", "Medium"),
         "performance_analysis": graph_result.get("performance_analysis", ""),
         "news_summary": graph_result.get("news_summary", ""),
+        "news": graph_result.get("news", {}),
+        "draft_report": graph_result.get("draft_report", ""),
         "predictions": _predictions_dto(forecast),
         "cached": cached,
     }

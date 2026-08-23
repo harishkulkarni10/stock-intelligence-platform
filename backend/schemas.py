@@ -79,6 +79,8 @@ class AnalyzeResponse(BaseModel):
     confidence: str | None = None
     performance_analysis: str | None = None
     news_summary: str | None = None
+    news: dict[str, Any] = Field(default_factory=dict)
+    draft_report: str | None = None
     predictions: dict[str, Any] = Field(default_factory=dict)
     cached: bool = False
     detail: str | None = None
