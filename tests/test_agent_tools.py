@@ -27,10 +27,11 @@ def test_get_forecast_prefers_child(monkeypatch, tmp_path):
     monkeypatch.setattr(tools, "child_artifact_dir", lambda ticker, cfg=None: child)
     monkeypatch.setattr(
         tools,
-        "predict_child",
+        "predict_best",
         lambda ticker, horizon: {
             "ticker": ticker,
             "horizon": horizon,
+            "model_source": "child",
             "model_version": "child-1",
             "model_type": "child",
             "last_close": 100.0,
@@ -40,12 +41,8 @@ def test_get_forecast_prefers_child(monkeypatch, tmp_path):
                 {"step": 1, "date": "2026-08-17", "close": 101.0, "value": 101.0}
             ],
             "artifact_dir": str(child),
+            "evaluation": {"champion": "child", "beats_persistence": True},
         },
-    )
-    monkeypatch.setattr(
-        tools,
-        "predict_parent",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("parent used")),
     )
 
     result = tools.get_forecast("nvda", horizon=1)

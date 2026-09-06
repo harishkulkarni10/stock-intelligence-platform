@@ -14,6 +14,9 @@ class AgentState(MessagesState, total=False):
     news: dict[str, Any]
     news_raw: str
     performance_analysis: str
+    performance_trend: str
+    performance_guardrail_ok: bool
+    performance_repaired: bool
     news_summary: str
     draft_report: str
     final_report: str
@@ -24,10 +27,14 @@ class AgentState(MessagesState, total=False):
 class AnalyzeResult(TypedDict, total=False):
     status: str
     ticker: str
+    mode: str
     final_report: str
     recommendation: str
     confidence: str
     performance_analysis: str
+    performance_trend: str
+    performance_guardrail_ok: bool
+    performance_repaired: bool
     news_summary: str
     news: dict[str, Any]
     draft_report: str
@@ -45,7 +52,11 @@ def extract_stance_and_confidence(text: str) -> tuple[str, str]:
     else:
         recommendation = "NEUTRAL"
 
-    if "CONFIDENCE: HIGH" in upper or "CONFIDENCE:** HIGH" in upper or "| **CONFIDENCE:** HIGH" in upper:
+    if (
+        "CONFIDENCE: HIGH" in upper
+        or "CONFIDENCE:** HIGH" in upper
+        or "| **CONFIDENCE:** HIGH" in upper
+    ):
         confidence = "High"
     elif "CONFIDENCE: LOW" in upper or "CONFIDENCE:** LOW" in upper:
         confidence = "Low"

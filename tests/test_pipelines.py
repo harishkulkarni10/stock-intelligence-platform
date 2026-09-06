@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -49,7 +51,18 @@ def pipeline_env(monkeypatch, tmp_path: Path):
     )
     monkeypatch.setattr(training_pipeline, "_cfg", lambda: cfg)
     monkeypatch.setattr(inference_pipeline, "_cfg", lambda: cfg)
-    monkeypatch.setattr(training_pipeline, "setup_mlflow", lambda: "sqlite:///:memory:")
+    fake_run = SimpleNamespace(info=SimpleNamespace(run_id="test-run"))
+    monkeypatch.setattr(
+        training_pipeline,
+        "mlflow_training_run",
+        lambda run_name, experiment="stock-intelligence-forecasting": nullcontext(fake_run),
+    )
+    monkeypatch.setattr(training_pipeline, "log_training_params", lambda **kwargs: None)
+    monkeypatch.setattr(training_pipeline, "log_eval_metrics", lambda *args, **kwargs: None)
+    monkeypatch.setattr(training_pipeline, "log_training_history", lambda *args, **kwargs: None)
+    monkeypatch.setattr(training_pipeline, "log_artifact_dir", lambda *args, **kwargs: None)
+    monkeypatch.setattr(training_pipeline.mlflow, "log_metric", lambda *args, **kwargs: None)
+    monkeypatch.setattr(training_pipeline.mlflow, "log_param", lambda *args, **kwargs: None)
     frame = _synthetic_frame()
     for ticker in (cfg.parent_ticker, "NVDA"):
         persist_features(frame, ticker, cfg.feature_path)

@@ -31,7 +31,8 @@ def root() -> dict:
     return {
         "project": "Stock Intelligence Platform",
         "version": "0.1.0",
-        "status": "stage1",
+        "status": "agent1_performance",
+        "analyze_mode": "performance_only",
         "endpoints": {
             "health": "GET /health",
             "ready": "GET /ready",

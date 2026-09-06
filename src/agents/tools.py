@@ -14,7 +14,7 @@ import yfinance as yf
 from dotenv import load_dotenv
 
 from src.data.ingestion import normalize_ticker
-from src.pipelines.inference_pipeline import predict_child, predict_parent
+from src.pipelines.inference_pipeline import predict_best
 from src.pipelines.training_pipeline import child_artifact_dir, parent_artifact_dir
 
 load_dotenv()
@@ -32,22 +32,16 @@ def _child_exists(ticker: str) -> bool:
 
 
 def get_forecast(ticker: str, horizon: int = 5) -> dict[str, Any]:
-    """Load the best available artifact and run live inference in-process.
+    """Load the evaluation winner and run live inference in-process.
 
-    Prefers a promoted child model; otherwise uses the parent weights on the
-    ticker's recent features. Never starts training from the agent path.
+    Prefers a promoted child artifact; otherwise serves the champion from the
+    latest train summary (parent or persistence). Never starts training here.
     """
     symbol = normalize_ticker(ticker)
     if horizon < 1:
         raise ValueError("horizon must be positive")
 
-    if _child_exists(symbol):
-        payload = predict_child(symbol, horizon)
-        source = "child"
-    elif _parent_exists():
-        payload = predict_parent(symbol, horizon)
-        source = "parent"
-    else:
+    if not _parent_exists() and not _child_exists(symbol):
         return {
             "status": "missing_model",
             "ticker": symbol,
@@ -55,6 +49,8 @@ def get_forecast(ticker: str, horizon: int = 5) -> dict[str, Any]:
             "error": "No parent or child model artifact found under outputs/",
         }
 
+    payload = predict_best(symbol, horizon)
+    source = payload.get("model_source", "parent")
     points = [
         {
             "step": int(item["step"]),
@@ -63,6 +59,7 @@ def get_forecast(ticker: str, horizon: int = 5) -> dict[str, Any]:
         }
         for item in payload.get("predictions", [])
     ]
+    evaluation = payload.get("evaluation") or {}
     return {
         "status": "ok",
         "ticker": symbol,
@@ -75,6 +72,9 @@ def get_forecast(ticker: str, horizon: int = 5) -> dict[str, Any]:
         "history": payload.get("history", []),
         "predictions": points,
         "artifact_dir": payload.get("artifact_dir"),
+        "evaluation": evaluation,
+        "champion": evaluation.get("champion", source),
+        "beats_persistence": evaluation.get("beats_persistence"),
     }
 
 

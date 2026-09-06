@@ -6,6 +6,7 @@ from langchain_core.messages import AIMessage, SystemMessage
 
 from logger.logger import get_logger
 from src.agents.llm import get_chat_llm, message_text
+from src.agents.performance_guardrails import run_performance_harness
 from src.agents.state import extract_stance_and_confidence
 from src.agents.tools import format_news_for_prompt, get_news
 
@@ -16,26 +17,29 @@ llm = get_chat_llm()
 def performance_analyst_node(state: dict) -> dict:
     ticker = state["ticker"]
     forecast_text = state.get("forecast_text", "")
+    forecast = state.get("forecast")
     logger.info("performance_analyst ticker=%s", ticker)
 
-    prompt = f"""You are a Performance Analyst for equities.
-Analyze this model forecast for {ticker}.
-
-FORECAST DATA:
-{forecast_text}
-
-Write 2-4 concise sentences covering:
-1) projected trend (Bullish / Bearish / Sideways)
-2) approximate price range from the forecast values
-3) one caution about model uncertainty
-
-Do not invent prices that are not in FORECAST DATA.
-"""
-    response = llm.invoke([SystemMessage(content=prompt)])
-    content = message_text(response)
+    harness = run_performance_harness(
+        ticker=ticker,
+        forecast_text=forecast_text,
+        forecast=forecast if isinstance(forecast, dict) else None,
+        llm=llm,
+    )
+    content = harness["performance_analysis"]
+    logger.info(
+        "performance_analyst ticker=%s trend=%s guardrail_ok=%s repaired=%s",
+        ticker,
+        harness["performance_trend"],
+        harness["performance_guardrail_ok"],
+        harness["performance_repaired"],
+    )
     return {
         "messages": [AIMessage(content=content)],
         "performance_analysis": content,
+        "performance_trend": harness["performance_trend"],
+        "performance_guardrail_ok": harness["performance_guardrail_ok"],
+        "performance_repaired": harness["performance_repaired"],
     }
 
 

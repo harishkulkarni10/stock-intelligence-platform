@@ -74,10 +74,14 @@ class AnalyzeResponse(BaseModel):
 
     status: str
     ticker: str
+    mode: str | None = "performance_only"
     final_report: str | None = None
     recommendation: str | None = None
     confidence: str | None = None
     performance_analysis: str | None = None
+    performance_trend: str | None = None
+    performance_guardrail_ok: bool | None = None
+    performance_repaired: bool | None = None
     news_summary: str | None = None
     news: dict[str, Any] = Field(default_factory=dict)
     draft_report: str | None = None

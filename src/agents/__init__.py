@@ -1,5 +1,15 @@
 """Agent package exports."""
 
-from src.agents.graph import analyze_stock, build_graph
+from src.agents.graph import (
+    analyze_stock,
+    build_full_graph,
+    build_graph,
+    build_performance_graph,
+)
 
-__all__ = ["analyze_stock", "build_graph"]
+__all__ = [
+    "analyze_stock",
+    "build_full_graph",
+    "build_graph",
+    "build_performance_graph",
+]

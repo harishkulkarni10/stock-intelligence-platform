@@ -241,11 +241,12 @@ st.markdown(
 )
 
 api_ok, readiness = _readiness()
-st.markdown('<div class="eyebrow">Machine forecast × agent research</div>', unsafe_allow_html=True)
-st.markdown('<h1 class="hero-title">From price signal<br>to investment brief.</h1>', unsafe_allow_html=True)
+st.markdown('<div class="eyebrow">LSTM forecast × performance analyst</div>', unsafe_allow_html=True)
+st.markdown('<h1 class="hero-title">Forecast first.<br>Agent 1 interprets it.</h1>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="hero-copy">One workflow connects live market data, the best available '
-    "forecast artifact, news intelligence, and a critic-reviewed research note.</div>",
+    '<div class="hero-copy">Production path for now: live champion forecast '
+    "(child LSTM, parent, or persistence) plus the Performance Analyst with "
+    "guardrails. News, report writer, and critic are parked until agent 1 is solid.</div>",
     unsafe_allow_html=True,
 )
 st.markdown(_status_strip(api_ok, readiness), unsafe_allow_html=True)
@@ -263,7 +264,7 @@ with st.form("research_command"):
             help="US equity ticker, for example NVDA, AAPL, MSFT, or TSLA.",
         )
     with action_col:
-        submitted = st.form_submit_button("Run brief →", use_container_width=True)
+        submitted = st.form_submit_button("Run agent 1 →", use_container_width=True)
 
 if submitted:
     ticker = re.sub(r"[^A-Za-z0-9.^=-]", "", ticker_input.strip()).upper()
@@ -274,30 +275,29 @@ if submitted:
     else:
         st.session_state.ticker = ticker
         try:
-            with st.status(f"Building the {ticker} intelligence brief…", expanded=True) as status:
-                st.write("Loading the best available model and live market window")
-                st.write("Running performance and news agents")
-                st.write("Drafting, checking, and finalizing the research note")
+            with st.status(f"Running agent 1 for {ticker}…", expanded=True) as status:
+                st.write("Loading champion forecast (LSTM / persistence)")
+                st.write("Performance Analyst + guardrails (Ollama)")
                 response = requests.post(
                     f"{API_URL}/analyze",
                     json={"ticker": ticker, "thread_id": st.session_state.thread_id},
                     timeout=REQUEST_TIMEOUT_SECONDS,
                 )
                 if response.status_code != 200:
-                    status.update(label="Research workflow failed", state="error")
+                    status.update(label="Agent 1 workflow failed", state="error")
                     st.session_state.analysis_error = _error_detail(response)
                     st.session_state.pop("analysis", None)
                 else:
                     payload = response.json()
                     if payload.get("status") != "ok":
-                        status.update(label="Research brief unavailable", state="error")
+                        status.update(label="Forecast / agent unavailable", state="error")
                         st.session_state.analysis_error = payload.get("detail") or payload.get("status")
                         st.session_state.pop("analysis", None)
                     else:
                         st.session_state.analysis = payload
                         st.session_state.pop("analysis_error", None)
                         cache_note = " · cache hit" if payload.get("cached") else ""
-                        status.update(label=f"{ticker} brief ready{cache_note}", state="complete")
+                        status.update(label=f"{ticker} agent 1 ready{cache_note}", state="complete")
         except requests.Timeout:
             st.session_state.analysis_error = (
                 f"The analysis exceeded {REQUEST_TIMEOUT_SECONDS} seconds. "
@@ -324,17 +324,19 @@ if data:
         else None
     )
     recommendation = str(data.get("recommendation") or "NEUTRAL").upper()
-    stance_class = "positive" if recommendation == "BULLISH" else (
-        "negative" if recommendation == "BEARISH" else ""
+    trend = str(data.get("performance_trend") or recommendation).upper()
+    stance_class = "positive" if trend == "BULLISH" else (
+        "negative" if trend == "BEARISH" else ""
     )
-    move_class = "positive" if projected_change is not None and projected_change >= 0 else "negative"
+    guardrail = data.get("performance_guardrail_ok")
+    guardrail_label = "PASS" if guardrail is True else ("FAIL" if guardrail is False else "—")
 
     st.markdown(
         f"""
         <div class="decision">
           <div class="decision-cell">
-            <div class="metric-label">Research stance</div>
-            <div class="metric-value {stance_class}">{_safe(recommendation)}</div>
+            <div class="metric-label">Forecast trend</div>
+            <div class="metric-value {stance_class}">{_safe(trend)}</div>
           </div>
           <div class="decision-cell">
             <div class="metric-label">Confidence</div>
@@ -345,15 +347,15 @@ if data:
             <div class="metric-value">{f"${float(last_close):,.2f}" if last_close is not None else "—"}</div>
           </div>
           <div class="decision-cell">
-            <div class="metric-label">Forecast move</div>
-            <div class="metric-value {move_class}">{f"{projected_change:+.2f}%" if projected_change is not None else "—"}</div>
+            <div class="metric-label">Guardrails</div>
+            <div class="metric-value">{_safe(guardrail_label)}</div>
           </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    st.markdown('<div class="section-index">01 / MODEL EVIDENCE</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-index">01 / MODEL FORECAST</div>', unsafe_allow_html=True)
     chart_col, model_col = st.columns([2.2, 1])
     with chart_col:
         st.plotly_chart(
@@ -365,8 +367,11 @@ if data:
         st.markdown("### Forecast provenance")
         st.metric("Model path", str(predictions.get("model_source") or "—").upper())
         st.metric("Forecast horizon", f"{predictions.get('horizon') or len(forecast)} sessions")
+        st.metric("Projected move", f"{projected_change:+.2f}%" if projected_change is not None else "—")
         st.caption(f"Version · {predictions.get('model_version') or 'unversioned'}")
         st.caption(f"Last observation · {predictions.get('last_date') or '—'}")
+        if data.get("performance_repaired"):
+            st.caption("Analysis was repaired by guardrails after an LLM mismatch.")
         if not forecast.empty:
             with st.expander("Forecast values"):
                 display = forecast[["date", "value"]].copy()
@@ -374,58 +379,17 @@ if data:
                 display["value"] = display["value"].map(lambda value: f"${value:,.2f}")
                 st.dataframe(display, hide_index=True, use_container_width=True)
 
-    st.markdown('<div class="section-index">02 / AGENT WORKBENCH</div>', unsafe_allow_html=True)
-    perf_col, news_col = st.columns(2)
-    with perf_col:
-        _agent_card(
-            "A1",
-            "Performance analyst",
-            "Forecast interpretation",
-            data.get("performance_analysis") or "",
-        )
-    with news_col:
-        _agent_card(
-            "A2",
-            "Market intelligence",
-            "News and sentiment",
-            data.get("news_summary") or "",
-        )
-
-    news = data.get("news") or {}
-    articles = news.get("articles") or []
-    if articles:
-        st.markdown(
-            f'<div class="eyebrow" style="margin-top:1.2rem">Source evidence · '
-            f'{_safe(news.get("provider", "market feed"))}</div>',
-            unsafe_allow_html=True,
-        )
-        source_columns = st.columns(min(3, len(articles)))
-        for index, article in enumerate(articles):
-            with source_columns[index % len(source_columns)]:
-                title = _safe(article.get("headline") or "Untitled article")
-                date = _safe(article.get("date") or "Date unavailable")
-                publisher = _safe(article.get("publisher") or article.get("source") or "News")
-                url = html.escape(str(article.get("url") or ""), quote=True)
-                linked_title = f'<a href="{url}" target="_blank">{title}</a>' if url else title
-                st.markdown(
-                    f'<div class="source-card"><div class="source-title">{linked_title}</div>'
-                    f'<div class="source-meta">{publisher} · {date}</div></div>',
-                    unsafe_allow_html=True,
-                )
-
-    with st.expander("A3 · Report writer draft — before critic review"):
-        st.markdown(data.get("draft_report") or "Draft unavailable for this cached response.")
-
-    st.markdown(
-        '<div class="section-index" style="margin-top:2rem">03 / CRITIC-APPROVED BRIEF</div>',
-        unsafe_allow_html=True,
+    st.markdown('<div class="section-index">02 / AGENT 1 · PERFORMANCE ANALYST</div>', unsafe_allow_html=True)
+    _agent_card(
+        "A1",
+        "Performance analyst",
+        "Interprets the champion forecast only (guardrailed)",
+        data.get("performance_analysis") or "",
     )
-    st.markdown('<div class="report-shell">', unsafe_allow_html=True)
-    st.markdown(data.get("final_report") or "No final report returned.")
-    st.markdown("</div>", unsafe_allow_html=True)
     st.caption(
-        f"Finalized by the critic agent · "
-        f"{'served from Redis cache' if data.get('cached') else 'fresh workflow run'}"
+        f"Mode · {data.get('mode') or 'performance_only'} · "
+        f"{'served from Redis cache' if data.get('cached') else 'fresh run'} · "
+        "Agents 2–4 disabled in this release"
     )
 
 st.markdown(

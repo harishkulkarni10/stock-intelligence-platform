@@ -1,4 +1,8 @@
-"""LangGraph assembly and analyze_stock orchestrator."""
+"""LangGraph assembly and analyze_stock orchestrator.
+
+Production default: Performance Analyst only (agent 1) + LSTM/persistence forecast.
+Full multi-agent graph remains available via build_full_graph() for later stages.
+"""
 
 from __future__ import annotations
 
@@ -18,8 +22,21 @@ from src.agents.tools import format_forecast_for_prompt, get_forecast
 from src.data.ingestion import normalize_ticker
 from src.memory.semantic_cache import ReportCache
 
+# Bump when analyze DTO / agent set changes so stale Redis payloads are ignored.
+ANALYZE_CACHE_PREFIX = "analyze-perf-v1"
 
-def build_graph():
+
+def build_performance_graph():
+    """Agent 1 only: forecast interpretation with guardrails."""
+    graph = StateGraph(AgentState)
+    graph.add_node("perf", performance_analyst_node)
+    graph.set_entry_point("perf")
+    graph.add_edge("perf", END)
+    return graph.compile()
+
+
+def build_full_graph():
+    """Full pipeline (performance → news → report → critic). Not used by UI yet."""
     graph = StateGraph(AgentState)
     graph.add_node("perf", performance_analyst_node)
     graph.add_node("news", market_expert_node)
@@ -33,6 +50,11 @@ def build_graph():
     return graph.compile()
 
 
+def build_graph():
+    """Default production graph = agent 1 only."""
+    return build_performance_graph()
+
+
 def _predictions_dto(forecast: dict[str, Any]) -> dict[str, Any]:
     return {
         "forecast": forecast.get("predictions", []),
@@ -43,7 +65,28 @@ def _predictions_dto(forecast: dict[str, Any]) -> dict[str, Any]:
         "model_type": forecast.get("model_type"),
         "model_source": forecast.get("model_source"),
         "horizon": forecast.get("horizon"),
+        "evaluation": forecast.get("evaluation") or {},
+        "champion": forecast.get("champion"),
+        "beats_persistence": forecast.get("beats_persistence"),
     }
+
+
+def _stance_from_trend(trend: str | None) -> str:
+    label = (trend or "SIDEWAYS").upper()
+    if label == "SIDEWAYS":
+        return "NEUTRAL"
+    if label in {"BULLISH", "BEARISH"}:
+        return label
+    return "NEUTRAL"
+
+
+def _confidence_for_forecast(forecast: dict[str, Any], *, repaired: bool) -> str:
+    source = str(forecast.get("model_source") or "").lower()
+    if repaired or source == "persistence":
+        return "Low"
+    if source == "child":
+        return "Medium"
+    return "Medium"
 
 
 def _analyze_dto(
@@ -53,26 +96,33 @@ def _analyze_dto(
     graph_result: dict[str, Any],
     cached: bool = False,
 ) -> AnalyzeResult:
+    trend = graph_result.get("performance_trend")
+    repaired = bool(graph_result.get("performance_repaired"))
+    analysis = graph_result.get("performance_analysis", "")
     return {
         "status": "ok",
         "ticker": ticker,
-        "final_report": graph_result.get("final_report", ""),
-        "recommendation": graph_result.get("recommendation", "NEUTRAL"),
-        "confidence": graph_result.get("confidence", "Medium"),
-        "performance_analysis": graph_result.get("performance_analysis", ""),
-        "news_summary": graph_result.get("news_summary", ""),
-        "news": graph_result.get("news", {}),
-        "draft_report": graph_result.get("draft_report", ""),
+        "mode": "performance_only",
+        "final_report": analysis,
+        "recommendation": _stance_from_trend(trend),
+        "confidence": _confidence_for_forecast(forecast, repaired=repaired),
+        "performance_analysis": analysis,
+        "performance_trend": trend,
+        "performance_guardrail_ok": graph_result.get("performance_guardrail_ok"),
+        "performance_repaired": repaired,
+        "news_summary": None,
+        "news": {},
+        "draft_report": None,
         "predictions": _predictions_dto(forecast),
         "cached": cached,
     }
 
 
 def analyze_stock(ticker: str, thread_id: str | None = None) -> AnalyzeResult:
-    """Run forecast tools + agent graph; optionally reuse a Redis report cache hit."""
+    """Run LSTM/persistence forecast + Performance Analyst only."""
     del thread_id  # reserved for future multi-turn memory
     symbol = normalize_ticker(ticker)
-    cache = ReportCache()
+    cache = ReportCache(prefix=ANALYZE_CACHE_PREFIX)
     cached = cache.get(symbol)
     if cached is not None:
         payload = dict(cached)
@@ -84,13 +134,14 @@ def analyze_stock(ticker: str, thread_id: str | None = None) -> AnalyzeResult:
         return {
             "status": forecast.get("status", "error"),
             "ticker": symbol,
+            "mode": "performance_only",
             "detail": forecast.get("error", "Forecast unavailable"),
             "predictions": {},
             "cached": False,
         }
 
     forecast_text = format_forecast_for_prompt(forecast)
-    graph = build_graph()
+    graph = build_performance_graph()
     result = graph.invoke(
         {
             "ticker": symbol,

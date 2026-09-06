@@ -17,13 +17,14 @@ def get_chat_llm():
 
         return ChatOllama(model=model, temperature=temperature, base_url=base_url)
     except Exception as exc:  # noqa: BLE001 - degrade gracefully for local smoke tests
+        error = exc
 
         class _MockLLM:
             def invoke(self, messages):
                 return AIMessage(
                     content=(
                         "Mock LLM unavailable "
-                        f"({exc}). Market Stance: NEUTRAL | Confidence: Low"
+                        f"({error}). Market Stance: NEUTRAL | Confidence: Low"
                     )
                 )
 
