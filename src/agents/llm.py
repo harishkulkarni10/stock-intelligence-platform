@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 from langchain_core.messages import AIMessage
 
@@ -41,6 +42,10 @@ def message_text(response) -> str:
                     parts.append(str(item["text"]))
                 else:
                     parts.append(str(item))
-            return "\n".join(parts)
-        return str(content)
-    return str(response)
+            text = "\n".join(parts)
+        else:
+            text = str(content)
+    else:
+        text = str(response)
+    # Some chat wrappers prefix a role label; strip for clean agent output.
+    return re.sub(r"(?i)^\s*assistant\s*\n+", "", text).strip()

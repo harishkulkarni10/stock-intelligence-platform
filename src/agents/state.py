@@ -18,6 +18,9 @@ class AgentState(MessagesState, total=False):
     performance_guardrail_ok: bool
     performance_repaired: bool
     news_summary: str
+    news_sentiment: str
+    news_guardrail_ok: bool
+    news_repaired: bool
     draft_report: str
     final_report: str
     recommendation: str
@@ -36,6 +39,9 @@ class AnalyzeResult(TypedDict, total=False):
     performance_guardrail_ok: bool
     performance_repaired: bool
     news_summary: str
+    news_sentiment: str
+    news_guardrail_ok: bool
+    news_repaired: bool
     news: dict[str, Any]
     draft_report: str
     predictions: dict[str, Any]

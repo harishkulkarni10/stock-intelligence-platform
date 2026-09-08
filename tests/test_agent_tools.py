@@ -68,7 +68,7 @@ def test_get_news_falls_back_to_yahoo(monkeypatch):
             {
                 "source": "yahoo",
                 "date": "2026-08-15",
-                "headline": "NVDA rises",
+                "headline": "NVDA rises on GPU demand",
                 "summary": "Chip demand",
                 "url": "https://example.com",
             }
@@ -80,3 +80,73 @@ def test_get_news_falls_back_to_yahoo(monkeypatch):
     assert result["status"] == "ok"
     assert result["provider"] == "yahoo"
     assert "NVDA rises" in tools.format_news_for_prompt(result)
+
+
+def test_get_news_drops_irrelevant_yahoo_blurbs(monkeypatch):
+    monkeypatch.setattr(tools, "FINNHUB_API_KEY", None)
+    monkeypatch.setattr(
+        tools,
+        "_news_from_yahoo",
+        lambda ticker, limit=5: [
+            {
+                "source": "yahoo",
+                "date": "2026-09-08",
+                "headline": "Walmart Has Gone Practically Nowhere",
+                "summary": "Target is up 68%.",
+                "url": "https://example.com/wmt",
+            },
+            {
+                "source": "yahoo",
+                "date": "2026-09-08",
+                "headline": "NVIDIA expands data-center GPU shipments",
+                "summary": "Cloud buyers increased NVDA orders.",
+                "url": "https://example.com/nvda",
+            },
+            {
+                "source": "yahoo",
+                "date": "2026-09-08",
+                "headline": "Fantastic News for Tesla Stock Investors",
+                "summary": "TSLA deliveries beat.",
+                "url": "https://example.com/tsla",
+            },
+        ],
+    )
+
+    result = tools.get_news("NVDA", limit=5)
+
+    assert result["status"] == "ok"
+    assert len(result["articles"]) == 1
+    assert "NVIDIA" in result["articles"][0]["headline"]
+    assert result["filtered_out"] == 2
+
+
+def test_get_news_unavailable_when_nothing_relevant(monkeypatch):
+    monkeypatch.setattr(tools, "FINNHUB_API_KEY", None)
+    monkeypatch.setattr(
+        tools,
+        "_news_from_yahoo",
+        lambda ticker, limit=5: [
+            {
+                "source": "yahoo",
+                "date": "2026-09-08",
+                "headline": "Walmart Has Gone Practically Nowhere",
+                "summary": "Target is up 68%.",
+                "url": "https://example.com/wmt",
+            }
+        ],
+    )
+
+    result = tools.get_news("NVDA")
+
+    assert result["status"] == "error"
+    assert result["error"] == "no_ticker_relevant_headlines"
+    assert result["articles"] == []
+
+
+def test_article_mentions_ticker_aliases():
+    assert tools.article_mentions_ticker(
+        {"headline": "Nvidia beats estimates", "summary": ""}, "NVDA"
+    )
+    assert not tools.article_mentions_ticker(
+        {"headline": "Walmart dividend kings", "summary": "Target up"}, "NVDA"
+    )

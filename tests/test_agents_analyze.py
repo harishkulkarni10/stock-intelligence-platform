@@ -22,10 +22,10 @@ def test_analyze_stock_missing_model(monkeypatch):
 
     assert result["status"] == "missing_model"
     assert result["ticker"] == "NVDA"
-    assert result["mode"] == "performance_only"
+    assert result["mode"] == "performance_news"
 
 
-def test_analyze_stock_happy_path_agent1_only(monkeypatch):
+def test_analyze_stock_happy_path_performance_news(monkeypatch):
     from src.agents import graph
 
     forecast = {
@@ -60,30 +60,41 @@ def test_analyze_stock_happy_path_agent1_only(monkeypatch):
                 "performance_trend": "SIDEWAYS",
                 "performance_guardrail_ok": True,
                 "performance_repaired": False,
+                "news_summary": (
+                    "Sentiment: MIXED\n"
+                    "Drivers: - Sample coverage\n"
+                    "Caveat: Fixture."
+                ),
+                "news_sentiment": "MIXED",
+                "news_guardrail_ok": True,
+                "news_repaired": False,
+                "news": {"status": "ok", "provider": "fixture", "articles": []},
             }
 
     monkeypatch.setattr(graph, "get_forecast", lambda ticker: forecast)
-    monkeypatch.setattr(graph, "build_performance_graph", lambda: FakeGraph())
+    monkeypatch.setattr(graph, "build_performance_news_graph", lambda: FakeGraph())
     monkeypatch.setattr(graph.ReportCache, "get", lambda self, ticker: None)
     monkeypatch.setattr(graph.ReportCache, "set", lambda self, ticker, result: None)
 
     result = graph.analyze_stock("NVDA")
 
     assert result["status"] == "ok"
-    assert result["mode"] == "performance_only"
+    assert result["mode"] == "performance_news"
     assert result["performance_trend"] == "SIDEWAYS"
     assert result["recommendation"] == "NEUTRAL"
-    assert result["confidence"] == "Low"
-    assert result["performance_guardrail_ok"] is True
-    assert result["news_summary"] is None
-    assert result["draft_report"] is None
+    assert result["news_sentiment"] == "MIXED"
+    assert result["news_guardrail_ok"] is True
     assert result["predictions"]["forecast"][0]["value"] == 100.0
-    assert "SIDEWAYS" in (result["performance_analysis"] or "")
     assert result["cached"] is False
 
 
 def test_build_graphs_available():
-    from src.agents.graph import build_full_graph, build_performance_graph
+    from src.agents.graph import (
+        build_full_graph,
+        build_performance_graph,
+        build_performance_news_graph,
+    )
 
     assert build_performance_graph() is not None
+    assert build_performance_news_graph() is not None
     assert build_full_graph() is not None

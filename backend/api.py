@@ -26,16 +26,17 @@ ROOT = Path(__file__).resolve().parents[1]
 rate_limiter = FixedWindowRateLimiter()
 
 
-@router.get("/")
-def root() -> dict:
+@router.get("/api")
+def api_info() -> dict:
     return {
         "project": "Stock Intelligence Platform",
         "version": "0.1.0",
-        "status": "agent1_performance",
-        "analyze_mode": "performance_only",
+        "status": "agent1_agent2",
+        "analyze_mode": "performance_news",
         "endpoints": {
             "health": "GET /health",
             "ready": "GET /ready",
+            "ui": "GET /",
             "train_parent": "POST /train-parent",
             "train_child": "POST /train-child",
             "predict_parent": "POST /predict-parent",

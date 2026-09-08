@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Stock Intelligence · UI prototype</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">Stock Intelligence</span>
+      </div>
+      <button id="themeToggle" class="text-btn" type="button">Dark</button>
+    </header>
+
+    <main class="page">
+      <form id="demoForm" class="search-row">
+        <label class="sr-only" for="tickerInput">Ticker</label>
+        <input
+          id="tickerInput"
+          type="search"
+          list="tickerSuggestions"
+          maxlength="12"
+          placeholder="Search ticker"
+          value="AAPL"
+        />
+        <datalist id="tickerSuggestions">
+          <option value="AAPL"></option>
+          <option value="MSFT"></option>
+          <option value="NVDA"></option>
+          <option value="TSLA"></option>
+        </datalist>
+        <button type="submit">Run agents</button>
+      </form>
+
+      <p class="prototype-note">
+        Design sandbox · hardcoded samples · production UI is at frontend/web (served by FastAPI)
+      </p>
+
+      <section id="results" class="results">
+        <div class="summary-grid">
+          <div class="metric">
+            <div class="metric-label">Trend</div>
+            <div id="metricTrend" class="metric-value">—</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">News</div>
+            <div id="metricNews" class="metric-value">—</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Confidence</div>
+            <div id="metricConfidence" class="metric-value">—</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Guardrails</div>
+            <div id="metricGuardrails" class="metric-value">—</div>
+          </div>
+        </div>
+
+        <section class="panel">
+          <h2 class="panel-title">Forecast</h2>
+          <div class="meta-row">
+            <span id="forecastModel">—</span>
+            <span id="forecastMove">—</span>
+            <span id="forecastClose">—</span>
+            <span id="forecastDate">—</span>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="forecastChart" aria-label="Forecast chart"></canvas>
+          </div>
+          <details class="table-details">
+            <summary>Values</summary>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Value</th>
+                  </tr>
+                </thead>
+                <tbody id="forecastTableBody"></tbody>
+              </table>
+            </div>
+          </details>
+        </section>
+
+        <section class="panel">
+          <h2 class="panel-title">Agent 1 · Performance</h2>
+          <pre id="agent1Text" class="agent-text"></pre>
+        </section>
+
+        <section class="panel">
+          <h2 class="panel-title">Agent 2 · News</h2>
+          <pre id="agent2Text" class="agent-text"></pre>
+        </section>
+
+        <section class="panel">
+          <h2 class="panel-title">Sources</h2>
+          <p id="sourcesMeta" class="meta-row"></p>
+          <ul id="sourcesList" class="sources-list"></ul>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>

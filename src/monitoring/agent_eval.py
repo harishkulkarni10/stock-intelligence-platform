@@ -1,21 +1,23 @@
-"""Agent evaluation helpers.
-
-Performance Analyst fixtures are deterministic (no Ollama) so CI can gate quality.
-"""
+"""Deterministic agent evaluation fixtures (no Ollama / no live news APIs)."""
 
 from __future__ import annotations
 
 from typing import Any
 
+from src.agents.news_guardrails import (
+    build_news_facts,
+    deterministic_news_analysis,
+    run_news_harness,
+    validate_news_analysis,
+)
 from src.agents.performance_guardrails import (
     build_forecast_facts,
     deterministic_performance_analysis,
     run_performance_harness,
     validate_performance_analysis,
 )
-from src.agents.tools import format_forecast_for_prompt
+from src.agents.tools import format_forecast_for_prompt, format_news_for_prompt
 
-# Golden cases: structured forecast → required trend. Used as the eval set.
 PERFORMANCE_EVAL_FIXTURES: tuple[dict[str, Any], ...] = (
     {
         "id": "flat_persistence",
@@ -28,7 +30,7 @@ PERFORMANCE_EVAL_FIXTURES: tuple[dict[str, Any], ...] = (
             "model_source": "persistence",
             "model_version": "persistence",
             "predictions": [
-                {"step": i, "date": f"2026-09-0{i+2}", "value": 224.41}
+                {"step": i, "date": f"2026-09-0{i + 2}", "value": 224.41}
                 for i in range(1, 6)
             ],
         },
@@ -99,9 +101,77 @@ PERFORMANCE_EVAL_FIXTURES: tuple[dict[str, Any], ...] = (
     },
 )
 
+NEWS_EVAL_FIXTURES: tuple[dict[str, Any], ...] = (
+    {
+        "id": "news_unavailable",
+        "ticker": "NVDA",
+        "news": {
+            "status": "error",
+            "ticker": "NVDA",
+            "provider": None,
+            "articles": [],
+            "error": "finnhub: timeout; yahoo: empty",
+        },
+        "expect_allowed": "UNAVAILABLE",
+    },
+    {
+        "id": "news_positive_bundle",
+        "ticker": "NVDA",
+        "news": {
+            "status": "ok",
+            "ticker": "NVDA",
+            "provider": "fixture",
+            "articles": [
+                {
+                    "date": "2026-09-01",
+                    "headline": "NVIDIA beats earnings estimates on strong GPU demand",
+                    "summary": "Data center revenue surged as cloud customers expanded AI clusters.",
+                    "url": "https://example.com/nvda-beats",
+                },
+                {
+                    "date": "2026-09-02",
+                    "headline": "Analysts raise NVIDIA price targets after guidance lift",
+                    "summary": "Multiple firms cited sustained accelerator backlog.",
+                    "url": "https://example.com/nvda-targets",
+                },
+            ],
+        },
+        "expect_allowed": "HAS_ARTICLES",
+        "good_analysis": (
+            "Sentiment: POSITIVE\n"
+            "Drivers: - NVIDIA beats earnings estimates on strong GPU demand\n"
+            "- Analysts raise NVIDIA price targets after guidance lift\n"
+            "Caveat: Coverage is recent but may miss macro risks."
+        ),
+    },
+    {
+        "id": "invented_headline_must_fail",
+        "ticker": "AAPL",
+        "news": {
+            "status": "ok",
+            "ticker": "AAPL",
+            "provider": "fixture",
+            "articles": [
+                {
+                    "date": "2026-09-01",
+                    "headline": "Apple unveils quieter iPhone update focused on battery life",
+                    "summary": "Incremental camera and efficiency improvements.",
+                    "url": "https://example.com/aapl",
+                }
+            ],
+        },
+        "expect_allowed": "HAS_ARTICLES",
+        "bad_analysis": (
+            "Sentiment: POSITIVE\n"
+            "Drivers: - Apple acquires a secret quantum chip startup in Zurich for forty billion dollars overnight\n"
+            "Caveat: None."
+        ),
+        "expect_validation_ok": False,
+    },
+)
+
 
 def evaluate_performance_fixtures() -> dict[str, Any]:
-    """Score the Performance Analyst policy layer without calling an LLM."""
     rows: list[dict[str, Any]] = []
     for fixture in PERFORMANCE_EVAL_FIXTURES:
         forecast = fixture["forecast"]
@@ -116,16 +186,14 @@ def evaluate_performance_fixtures() -> dict[str, Any]:
         if "bad_analysis" in fixture:
             check = validate_performance_analysis(fixture["bad_analysis"], facts)
             row["validation_ok"] = check.ok
-            row["validation_pass"] = check.ok == fixture.get(
-                "expect_validation_ok", True
-            )
+            row["validation_pass"] = check.ok == fixture.get("expect_validation_ok", True)
             row["errors"] = list(check.errors)
         else:
             good = deterministic_performance_analysis(facts, fixture["ticker"])
             check = validate_performance_analysis(good, facts)
             row["validation_ok"] = check.ok
             row["validation_pass"] = check.ok
-            # Harness must recover from a wrong LLM answer.
+
             class _BadLLM:
                 def invoke(self, messages):
                     return (
@@ -149,16 +217,81 @@ def evaluate_performance_fixtures() -> dict[str, Any]:
         rows.append(row)
 
     passed = all(
-        r["trend_ok"]
-        and r.get("validation_pass", True)
-        and r.get("harness_recovers", True)
+        r["trend_ok"] and r.get("validation_pass", True) and r.get("harness_recovers", True)
         for r in rows
     )
     return {"ok": passed, "cases": rows}
 
 
-class AgentEvaluator:
-    """Thin entrypoint; start with Performance Analyst fixtures."""
+def evaluate_news_fixtures() -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for fixture in NEWS_EVAL_FIXTURES:
+        news = fixture["news"]
+        facts = build_news_facts(news, ticker=fixture["ticker"])
+        row: dict[str, Any] = {
+            "id": fixture["id"],
+            "allowed_ok": facts.allowed_sentiment == fixture["expect_allowed"],
+            "allowed": facts.allowed_sentiment,
+        }
+        if "bad_analysis" in fixture:
+            check = validate_news_analysis(fixture["bad_analysis"], facts)
+            row["validation_ok"] = check.ok
+            row["validation_pass"] = check.ok == fixture.get("expect_validation_ok", True)
+            row["errors"] = list(check.errors)
+        elif "good_analysis" in fixture:
+            check = validate_news_analysis(fixture["good_analysis"], facts)
+            row["validation_ok"] = check.ok
+            row["validation_pass"] = check.ok
+        else:
+            good = deterministic_news_analysis(facts)
+            check = validate_news_analysis(good, facts)
+            row["validation_ok"] = check.ok
+            row["validation_pass"] = check.ok
 
+            class _BadLLM:
+                def invoke(self, messages):
+                    return (
+                        "Sentiment: POSITIVE\n"
+                        "Drivers: - Completely fabricated merger with a fictional bank in Antarctica tomorrow\n"
+                        "Caveat: none"
+                    )
+
+            recovered = run_news_harness(
+                ticker=fixture["ticker"],
+                news=news,
+                news_raw=format_news_for_prompt(news),
+                llm=_BadLLM(),
+                max_attempts=1,
+            )
+            row["harness_recovers"] = (
+                recovered["news_guardrail_ok"]
+                and recovered["news_sentiment"] == "UNAVAILABLE"
+            )
+        rows.append(row)
+
+    passed = all(
+        r["allowed_ok"] and r.get("validation_pass", True) and r.get("harness_recovers", True)
+        for r in rows
+    )
+    return {"ok": passed, "cases": rows}
+
+
+def evaluate_all_agent_fixtures() -> dict[str, Any]:
+    performance = evaluate_performance_fixtures()
+    news = evaluate_news_fixtures()
+    return {
+        "ok": performance["ok"] and news["ok"],
+        "performance": performance,
+        "news": news,
+    }
+
+
+class AgentEvaluator:
     def evaluate_performance(self) -> dict[str, Any]:
         return evaluate_performance_fixtures()
+
+    def evaluate_news(self) -> dict[str, Any]:
+        return evaluate_news_fixtures()
+
+    def evaluate_all(self) -> dict[str, Any]:
+        return evaluate_all_agent_fixtures()

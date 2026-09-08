@@ -5,6 +5,7 @@ from src.agents.graph import (
     build_full_graph,
     build_graph,
     build_performance_graph,
+    build_performance_news_graph,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "build_full_graph",
     "build_graph",
     "build_performance_graph",
+    "build_performance_news_graph",
 ]

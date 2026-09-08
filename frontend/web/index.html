@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Stock Intelligence</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js" defer></script>
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a href="/" class="brand" id="brandHome" title="Home">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">Stock Intelligence</span>
+      </a>
+      <div class="topbar-actions">
+        <span id="apiStatus" class="status-pill">API</span>
+        <button id="themeToggle" class="icon-btn" type="button" aria-label="Toggle theme">
+          <svg id="themeIconSun" class="theme-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="4" fill="currentColor" />
+            <path
+              d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              fill="none"
+            />
+          </svg>
+          <svg id="themeIconMoon" class="theme-icon hidden" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M20 14.5A7.5 7.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5z"
+              fill="currentColor"
+            />
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="page">
+      <form id="analyzeForm" class="search-row" autocomplete="off">
+        <label class="sr-only" for="tickerInput">Ticker</label>
+        <input
+          id="tickerInput"
+          name="ticker"
+          type="search"
+          list="tickerSuggestions"
+          maxlength="12"
+          placeholder="Search ticker (e.g. AAPL)"
+          value=""
+          required
+        />
+        <datalist id="tickerSuggestions">
+          <option value="AAPL"></option>
+          <option value="MSFT"></option>
+          <option value="NVDA"></option>
+          <option value="TSLA"></option>
+          <option value="GOOGL"></option>
+          <option value="AMD"></option>
+          <option value="META"></option>
+          <option value="AMZN"></option>
+          <option value="ORCL"></option>
+          <option value="AVGO"></option>
+        </datalist>
+        <button id="analyzeBtn" type="submit">Run agents</button>
+      </form>
+
+      <p id="statusLine" class="status-line hidden" aria-live="polite"></p>
+      <p id="errorBanner" class="error-banner hidden" role="alert"></p>
+
+      <section id="home" class="home">
+        <div class="hero-block">
+          <p class="eyebrow">Research workspace</p>
+          <h1>Forecast first. Agents interpret.</h1>
+          <p class="hero-lead">
+            Champion model path (child · parent · persistence), then two guardrailed agents —
+            performance on the numbers, news on ticker-relevant headlines.
+          </p>
+          <div class="chip-row" id="quickTickers">
+            <button type="button" data-ticker="AAPL">AAPL</button>
+            <button type="button" data-ticker="MSFT">MSFT</button>
+            <button type="button" data-ticker="NVDA">NVDA</button>
+            <button type="button" data-ticker="TSLA">TSLA</button>
+            <button type="button" data-ticker="ORCL">ORCL</button>
+            <button type="button" data-ticker="GOOGL">GOOGL</button>
+          </div>
+        </div>
+
+        <div class="home-grid">
+          <section class="panel home-panel">
+            <div class="panel-head">
+              <h2 class="panel-title">How a run works</h2>
+              <span class="hint">Click a step</span>
+            </div>
+            <div class="pipeline" id="pipeline">
+              <button type="button" class="pipe-step active" data-step="0">
+                <span class="pipe-num">1</span>
+                <span>Forecast</span>
+              </button>
+              <button type="button" class="pipe-step" data-step="1">
+                <span class="pipe-num">2</span>
+                <span>Agent 1</span>
+              </button>
+              <button type="button" class="pipe-step" data-step="2">
+                <span class="pipe-num">3</span>
+                <span>News</span>
+              </button>
+              <button type="button" class="pipe-step" data-step="3">
+                <span class="pipe-num">4</span>
+                <span>Agent 2</span>
+              </button>
+            </div>
+            <div id="pipelineDetail" class="pipeline-detail"></div>
+            <div id="homeDemoChart" class="chart-box"></div>
+            <p class="chart-hint">Demo path · drag to pan · scroll to zoom · double-click to reset</p>
+          </section>
+
+          <section class="panel home-panel">
+            <h2 class="panel-title">What you get</h2>
+            <div class="feature-list">
+              <button type="button" class="feature-card" data-feature="model">
+                <div class="feature-icon model" aria-hidden="true"></div>
+                <div>
+                  <strong>Honest model path</strong>
+                  <p>Serves child, parent, or persistence — whichever won evaluation.</p>
+                </div>
+              </button>
+              <button type="button" class="feature-card" data-feature="a1">
+                <div class="feature-icon a1" aria-hidden="true"></div>
+                <div>
+                  <strong>Performance analyst</strong>
+                  <p>Trend / range / caution locked to forecast prices.</p>
+                </div>
+              </button>
+              <button type="button" class="feature-card" data-feature="a2">
+                <div class="feature-icon a2" aria-hidden="true"></div>
+                <div>
+                  <strong>Market expert</strong>
+                  <p>Sentiment from ticker-filtered headlines only.</p>
+                </div>
+              </button>
+              <button type="button" class="feature-card" data-feature="guards">
+                <div class="feature-icon guards" aria-hidden="true"></div>
+                <div>
+                  <strong>Guardrails</strong>
+                  <p>Invented prices or headlines are rejected or repaired.</p>
+                </div>
+              </button>
+            </div>
+            <div id="featureDetail" class="feature-detail"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="results" class="results hidden">
+        <div class="summary-grid">
+          <div class="metric">
+            <div class="metric-label">Trend</div>
+            <div id="metricTrend" class="metric-value">—</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">News</div>
+            <div id="metricNews" class="metric-value">—</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Confidence</div>
+            <div id="metricConfidence" class="metric-value">—</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Guardrails</div>
+            <div id="metricGuardrails" class="metric-value">—</div>
+          </div>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2 class="panel-title">Forecast</h2>
+            <div class="chart-tools">
+              <button type="button" class="ghost-btn" id="chartReset" title="Reset zoom">Reset view</button>
+            </div>
+          </div>
+          <div class="meta-row meta-row-wrap" id="forecastMeta"></div>
+          <div id="forecastChart" class="chart-box"></div>
+          <p class="chart-hint">Drag to pan · scroll / pinch to zoom · hover for values · Reset view to restore</p>
+          <details class="table-details">
+            <summary>Session values</summary>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Value</th>
+                  </tr>
+                </thead>
+                <tbody id="forecastTableBody"></tbody>
+              </table>
+            </div>
+          </details>
+        </section>
+
+        <section class="panel agent-panel" id="agent1Panel">
+          <div class="panel-head">
+            <div>
+              <p class="agent-kicker">Agent 1</p>
+              <h2 class="panel-title">Performance analyst</h2>
+            </div>
+            <button type="button" class="ghost-btn" data-copy="agent1Raw">Copy</button>
+          </div>
+          <div class="agent-chips" id="agent1Chips"></div>
+          <div class="agent-sections" id="agent1Sections"></div>
+          <details class="raw-details">
+            <summary>Raw response</summary>
+            <pre id="agent1Raw" class="agent-text"></pre>
+          </details>
+        </section>
+
+        <section class="panel agent-panel" id="agent2Panel">
+          <div class="panel-head">
+            <div>
+              <p class="agent-kicker">Agent 2</p>
+              <h2 class="panel-title">Market expert</h2>
+            </div>
+            <button type="button" class="ghost-btn" data-copy="agent2Raw">Copy</button>
+          </div>
+          <div class="agent-chips" id="agent2Chips"></div>
+          <div class="agent-sections" id="agent2Sections"></div>
+          <details class="raw-details">
+            <summary>Raw response</summary>
+            <pre id="agent2Raw" class="agent-text"></pre>
+          </details>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2 class="panel-title">Sources</h2>
+            <span id="sourcesMeta" class="hint"></span>
+          </div>
+          <ul id="sourcesList" class="sources-list"></ul>
+        </section>
+
+        <p id="runMeta" class="run-meta"></p>
+      </section>
+    </main>
+  </body>
+</html>

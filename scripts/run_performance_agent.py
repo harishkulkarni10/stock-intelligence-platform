@@ -7,7 +7,7 @@ import json
 
 from src.agents.nodes import performance_analyst_node
 from src.agents.tools import format_forecast_for_prompt, get_forecast
-from src.monitoring.agent_eval import evaluate_performance_fixtures
+from src.monitoring.agent_eval import evaluate_all_agent_fixtures, evaluate_performance_fixtures
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -18,7 +18,17 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Run deterministic fixture evals (no Ollama)",
     )
+    parser.add_argument(
+        "--eval-all",
+        action="store_true",
+        help="Run agent1 + agent2 fixture evals",
+    )
     args = parser.parse_args(argv)
+
+    if args.eval_all:
+        report = evaluate_all_agent_fixtures()
+        print(json.dumps(report, indent=2))
+        raise SystemExit(0 if report["ok"] else 1)
 
     if args.eval_only:
         report = evaluate_performance_fixtures()

@@ -13,7 +13,10 @@ from typing import Any
 
 from langchain_core.messages import SystemMessage
 
+from logger.logger import get_logger
 from src.agents.llm import message_text
+
+logger = get_logger()
 
 TRENDS = ("BULLISH", "BEARISH", "SIDEWAYS")
 # Relative move below this → SIDEWAYS (matches persistence / noise).
@@ -51,7 +54,7 @@ class GuardrailResult:
 
 def _as_float(value: Any) -> float | None:
     try:
-        if value is None:
+        if value is None:       # type: ignore                                                                                                                          
             return None
         number = float(value)
     except (TypeError, ValueError):
@@ -83,7 +86,7 @@ def extract_prices_from_text(text: str) -> list[float]:
         value = _as_float(raw)
         if value is not None:
             found.append(value)
-    return found
+    return found    
 
 
 def expected_trend_from_prices(
@@ -259,6 +262,13 @@ def run_performance_harness(
     text = ""
     result = GuardrailResult(ok=False, parsed_trend=None, errors=("not_run",))
 
+    logger.info(
+        "[agent1.harness] begin ticker=%s expected_trend=%s prices=%s",
+        ticker,
+        facts.expected_trend,
+        len(facts.prices),
+    )
+
     for attempt in range(1, max_attempts + 1):
         prompt = build_performance_prompt(ticker, forecast_text, facts)
         if attempt > 1:
@@ -267,6 +277,14 @@ def run_performance_harness(
                 f"Errors: {', '.join(result.errors)}. "
                 f"Respond again with Trend: {facts.expected_trend} exactly."
             )
+            logger.info(
+                "[agent1.harness] retry ticker=%s attempt=%s prior_errors=%s",
+                ticker,
+                attempt,
+                list(result.errors),
+            )
+        else:
+            logger.info("[agent1.harness] llm_invoke ticker=%s attempt=%s", ticker, attempt)
         response = call([SystemMessage(content=prompt)])
         text = message_text(response)
         result = validate_performance_analysis(text, facts)
@@ -278,17 +296,39 @@ def run_performance_harness(
                 "parsed_trend": result.parsed_trend,
             }
         )
+        logger.info(
+            "[agent1.harness] validate ticker=%s attempt=%s ok=%s trend=%s errors=%s",
+            ticker,
+            attempt,
+            result.ok,
+            result.parsed_trend,
+            list(result.errors),
+        )
         if result.ok:
             break
 
     repaired = False
     if not result.ok:
+        logger.warning(
+            "[agent1.harness] repair ticker=%s after_attempts=%s",
+            ticker,
+            max_attempts,
+        )
         text = repair_performance_analysis(text, facts, ticker)
         result = validate_performance_analysis(text, facts)
         repaired = True
         if not result.ok:
+            logger.warning("[agent1.harness] deterministic_fallback ticker=%s", ticker)
             text = deterministic_performance_analysis(facts, ticker)
             result = validate_performance_analysis(text, facts)
+
+    logger.info(
+        "[agent1.harness] end ticker=%s trend=%s ok=%s repaired=%s",
+        ticker,
+        facts.expected_trend,
+        result.ok,
+        repaired,
+    )
 
     return {
         "performance_analysis": text,

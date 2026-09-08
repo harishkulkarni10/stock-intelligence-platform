@@ -9,7 +9,7 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 import backend.state as app_state
@@ -20,6 +20,7 @@ from backend.state import REDIS_UP, registry
 load_dotenv()
 
 ROOT = Path(__file__).resolve().parents[1]
+WEB_DIR = ROOT / "frontend" / "web"
 
 
 def _redis_url() -> str:
@@ -90,6 +91,21 @@ def ready() -> HealthResponse:
 @app.get("/metrics")
 def metrics() -> Response:
     return Response(generate_latest(registry), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.get("/")
+def ui_index() -> FileResponse:
+    return FileResponse(WEB_DIR / "index.html")
+
+
+@app.get("/styles.css")
+def ui_styles() -> FileResponse:
+    return FileResponse(WEB_DIR / "styles.css", media_type="text/css")
+
+
+@app.get("/app.js")
+def ui_app_js() -> FileResponse:
+    return FileResponse(WEB_DIR / "app.js", media_type="application/javascript")
 
 
 def run() -> None:

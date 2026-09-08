@@ -1,116 +1,155 @@
 # Stock Intelligence Platform
 
-Production-style equity forecasting with a guardrailed Performance Analyst (agent 1).
-Champion forecast (child LSTM / parent / persistence) is produced by code; the LLM
-only interprets those numbers.
+Equity forecasting with guardrailed agents on champion model paths.
+Forecasts are produced by code (child LSTM / parent / persistence). LLMs only interpret tool outputs.
 
-## What's working now (agent-1 production path)
+**Live path:** forecast → Performance Analyst (agent 1) → Market Expert / news (agent 2).
 
-- **Data:** yfinance OHLCV + RSI/MACD → validated parquet feature store
-- **ML:** parent (`^GSPC`) / child transfer learning, price-space metrics, champion gates
-- **Serving:** FastAPI train/predict/status + Redis task/prediction cache
-- **Agent 1:** `POST /analyze` → `get_forecast` → Performance Analyst harness (trend / range / caution + guardrails + fixture evals)
-- **UI:** Streamlit shows forecast chart + agent 1 only (`frontend/app.py`)
-- **Colab:** GPU training notebook + `scripts/make_colab_bundle.py`
+## Clone and run
 
-Agents 2–4 (news / report / critic) remain in code via `build_full_graph()` but are **not** in the UI/API default path yet.
+### Prerequisites
 
-Still ahead: agents 2–4 productization, latency/throughput SLOs, deeper drift dashboards, cloud/K8s.
+- Python 3.11+ recommended
+- [Ollama](https://ollama.com) installed and running (for agent LLM calls)
+- Optional: Redis (analyze result cache)
+- Optional: Finnhub API key for company news (`FMI_API_KEY` / `FINNHUB_API_KEY` in `.env`)
 
-## Layout
+### 1. Clone
 
-```text
-backend/            FastAPI (health, ready, train, predict, analyze)
-src/
-  data/             ingestion + sequence preparation
-  model/            LSTM, train, evaluate, save/load
-  pipelines/        sip-data / sip-train / sip-predict
-  agents/           tools, nodes, guardrails, LangGraph analyze
-  memory/           report cache (Redis TTL)
-  monitoring/       performance agent fixture evals
-feature_store/      Feast definitions + offline parquet
-frontend/           Streamlit agent-1 UI
-notebooks/          Colab GPU training
-scripts/            colab bundle, run_performance_agent
-outputs/            model artifacts (gitignored)
-doc/                design notes
+```bash
+git clone https://github.com/harishkulkarni10/stock-intelligence-platform.git
+cd stock-intelligence-platform
 ```
 
-## Setup
+### 2. Environment
+
+**Windows PowerShell**
 
 ```powershell
-cd "D:\Harish\AI projects\Stock-Agent-Ops-Cursor\Stock Intelligence Platform"
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e ".[dev,agents,ui]"
 copy .env.example .env
 ```
 
-Install [Ollama](https://ollama.com) and pull a chat model:
+**macOS / Linux**
 
-```powershell
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev,agents,ui]"
+cp .env.example .env
+```
+
+Pull a local chat model:
+
+```bash
 ollama pull llama3.2:3b
 ```
 
-Place trained weights under `outputs/parent/` (from Colab) or train locally.
+Place trained artifacts under `outputs/parent/` (at least `model.pt`) so forecasts can run. Child tickers may live under `outputs/<TICKER>/`. Without models, `/analyze` returns `missing_model`.
 
-## Quick start (API + UI)
+### 3. Start the app
 
-Terminal 1 — API:
+Keep Ollama running, then:
+
+**Windows PowerShell**
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
-Terminal 2 — UI:
+**macOS / Linux**
 
-```powershell
-.\.venv\Scripts\Activate.ps1
-streamlit run frontend/app.py
+```bash
+source .venv/bin/activate
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
-Open http://localhost:8501 → enter ticker → **Run agent 1**.
+Open **http://127.0.0.1:8000**
 
-CLI checks (no UI):
+- UI: search a ticker → **Run agents** (forecast + agent 1 + agent 2)
+- API map: http://127.0.0.1:8000/api
+- OpenAPI docs: http://127.0.0.1:8000/docs
 
-```powershell
-python scripts\run_performance_agent.py --eval-only
-python scripts\run_performance_agent.py --ticker NVDA
+Agent runs often take about a minute (two local LLM calls).
+
+## Layout
+
+```text
+backend/            FastAPI (REST API + web UI)
+src/
+  data/             ingestion + sequence preparation
+  model/            LSTM, train, evaluate, save/load
+  pipelines/        sip-data / sip-train / sip-predict
+  agents/           tools, nodes, guardrails, LangGraph analyze
+  memory/           report cache (Redis TTL)
+  monitoring/       agent fixture evals
+feature_store/      Feast definitions + offline parquet
+frontend/web/       Web UI (light/dark) for agents 1–2
+frontend/app.py     Optional Streamlit UI
+notebooks/          Colab GPU training
+scripts/            CLI runners
+outputs/            model artifacts (gitignored)
 ```
 
-## Analyze response (agent 1)
+## CLI (no UI)
 
-`POST /analyze` returns:
+From the project root with the venv active:
 
-- `predictions` — champion forecast + history (**code**, not LLM)
-- `performance_analysis` / `performance_trend` / `performance_guardrail_ok`
-- `recommendation` — BULLISH / BEARISH / NEUTRAL (SIDEWAYS → NEUTRAL)
-- `confidence` — Low when serving persistence or repaired output
-- `mode` — `performance_only`
+```powershell
+# Guardrail fixtures (no Ollama / no live news)
+python scripts\run_analyze_agents.py --eval-only
 
-Redis cache key prefix: `analyze-perf-v1`.
+# Forecast + agent 1 + agent 2
+python scripts\run_analyze_agents.py --ticker NVDA
 
-## CLI pipelines
+# Full analyze path (same as POST /analyze)
+python scripts\run_analyze_agents.py --full-analyze --ticker NVDA
+```
+
+On macOS/Linux use `python scripts/run_analyze_agents.py ...`.
+
+## Data / train / predict pipelines
 
 | Stage | Command |
 |-------|---------|
-| Build features | `sip-data build --tickers ^GSPC NVDA` |
+| Build features | `sip-data build --tickers ^GSPC NVDA AAPL MSFT` |
 | Inspect store | `sip-data inspect` |
 | Train parent | `sip-train parent --source feature-store` |
 | Train child | `sip-train child --ticker NVDA --source feature-store` |
 | Predict | `sip-predict best --ticker NVDA --horizon 5` |
 
-## Design principles
+## Analyze response
 
-- Chronological train/validation/test splits (no random window leakage)
-- Scaler fit on train only; price-space evaluation + persistence baseline
-- Agents interpret tool outputs; they do not invent forecast numbers
-- Agent 1 hard guardrails: trend must match numbers; no invented prices
-- Offline parquet is the training authority
+`POST /analyze` returns:
+
+- `predictions` — champion forecast + history (code, not LLM)
+- `performance_analysis` / `performance_trend` / `performance_guardrail_ok`
+- `news_summary` / `news_sentiment` / `news_guardrail_ok`
+- `recommendation` — BULLISH / BEARISH / NEUTRAL (SIDEWAYS → NEUTRAL)
+- `confidence` — Low when serving persistence or repaired output
+- `mode` — `performance_news`
+
+Redis cache prefix: `analyze-perf-news-v2`.
+
+News: Finnhub company-news when keyed; otherwise Yahoo with ticker relevance filtering. If nothing relevant remains, agent 2 returns `UNAVAILABLE`.
 
 ## Tests
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 ```
+
+```bash
+pytest -q
+```
+
+## Design notes
+
+- Chronological train/validation/test splits
+- Scaler fit on train only; price-space metrics + persistence baseline
+- Agents interpret tools; they do not invent forecast prices or headlines
+- Agent 1: trend must match numbers
+- Agent 2: drivers must be grounded in fetched news
