@@ -1,20 +1,41 @@
 # Stock Intelligence Platform
 
-Equity forecasting with guardrailed agents on champion model paths.
-Forecasts are produced by code (child LSTM / parent / persistence). LLMs only interpret tool outputs.
+An equity research desk: search a ticker, get a short-horizon price forecast, then three specialist notes that interpret tool outputs. The app is research support only — it does not place trades or issue buy/sell recommendations.
 
-**Live path:** forecast → Performance Analyst (agent 1) → Market Expert / news (agent 2) → Financial Analyst (agent 3).
+**Live analyze path:** forecast (code) → Performance Analyst → Market Expert → Financial Analyst.
+
+The web UI also includes **Guide** (product help chat) and hover explanations on the summary chips (Trend, News, Confidence, Projected move). Those chip notes are written during the analyze run, not on hover.
+
+---
+
+## What you get
+
+| Area | What it does |
+| --- | --- |
+| Forecast | Champion path from trained models (or a persistence fallback). Drawn on the chart with history. |
+| Performance Analyst | Trend label and note grounded in the forecast path. Trend must match the numbers. |
+| Market Expert | News tone and briefing from recent headlines. Returns `UNAVAILABLE` when nothing useful is found. |
+| Financial Analyst | Fundamentals health, strengths, and weaknesses from a company snapshot. Does not invent statement figures. |
+| Summary chips | Trend, News, Confidence, Projected move — with short explanations available on hover. |
+| Guide | In-app assistant for how the desk works (agents, labels, UI). Out of scope for ticker picks and trading advice. |
+| On your desk | In-session list of finished tickers for this browser visit (clears on refresh). |
+| Analyze cache | Optional Redis cache for repeated tickers. UI badge + **Refresh analysis** to force a new run. |
+
+---
+
+## Prerequisites
+
+- Python **3.11+**
+- An LLM backend:
+  - **Google AI Studio** key (`LLM_PROVIDER=google`), or
+  - **[Ollama](https://ollama.com)** running locally (`LLM_PROVIDER=ollama`)
+- Optional: **Redis** (analyze result cache)
+- Optional: **Finnhub** API key for company news (`FMI_API_KEY` / `FINNHUB_API_KEY`)
+- Trained model artifacts under `outputs/` (at least `outputs/parent/model.pt`). Without models, `/analyze` returns `missing_model`.
+
+---
 
 ## Clone and run
-
-### Prerequisites
-
-- Python 3.11+ recommended
-- [Ollama](https://ollama.com) installed and running **or** a Google AI Studio key for Gemma (`LLM_PROVIDER=google`)
-- Optional: Redis (analyze result cache)
-- Optional: Finnhub API key for company news (`FMI_API_KEY` / `FINNHUB_API_KEY` in `.env`)
-
-
 
 ### 1. Clone
 
@@ -22,8 +43,6 @@ Forecasts are produced by code (child LSTM / parent / persistence). LLMs only in
 git clone https://github.com/harishkulkarni10/stock-intelligence-platform.git
 cd stock-intelligence-platform
 ```
-
-
 
 ### 2. Environment
 
@@ -45,124 +64,155 @@ pip install -e ".[dev,agents,ui]"
 cp .env.example .env
 ```
 
-Pull a local chat model (only if using Ollama):
+Edit `.env`. Minimum useful settings:
+
+```env
+LLM_PROVIDER=google
+GOOGLE_API_KEY=your_key_here
+GOOGLE_MODEL=gemma-3-12b-it
+
+# Or local Ollama:
+# LLM_PROVIDER=ollama
+# OLLAMA_MODEL=llama3.2:3b
+```
+
+If using Ollama, pull a chat model:
 
 ```bash
 ollama pull llama3.2:3b
 ```
 
-**LLM switch** (in `.env`):
-
-```env
-# Use Google Gemma (faster) or local Ollama
-LLM_PROVIDER=google
-GOOGLE_API_KEY=your_key_here
-GOOGLE_MODEL=gemma-3-12b-it
-
-# Or flip back to local:
-# LLM_PROVIDER=ollama
-```
-
-Place trained artifacts under `outputs/parent/` (at least `model.pt`) so forecasts can run. Child tickers may live under `outputs/<TICKER>/`. Without models, `/analyze` returns `missing_model`.
-
 ### 3. Start the app
-
-Keep Ollama running, then:
 
 **Windows PowerShell**
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 **macOS / Linux**
 
 ```bash
 source .venv/bin/activate
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-Open **[http://127.0.0.1:8000](http://127.0.0.1:8000)**
+Open **http://127.0.0.1:8000**
 
-- UI: search a ticker → **Run agents** (forecast + agent 1 + agent 2)
-- API map: [http://127.0.0.1:8000/api](http://127.0.0.1:8000/api)
-- OpenAPI docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+| Link | Purpose |
+| --- | --- |
+| http://127.0.0.1:8000 | Research desk UI |
+| http://127.0.0.1:8000/api | API route map |
+| http://127.0.0.1:8000/docs | OpenAPI docs |
+| `GET /ready` | Readiness check |
 
-Agent runs often take about a minute (two local LLM calls).
+A full analyze run usually takes under a minute with a cloud LLM (forecast + three agents + chip explanations). Local Ollama can be slower.
 
-## Layout
+---
+
+## Using the UI
+
+1. Enter a ticker and run analysis.
+2. Read the summary chips, company overview, and forecast chart.
+3. Open the agent tabs for Performance, Market, and Financial notes.
+4. Hover (or tap) a summary chip for a short explanation of that label.
+5. Use **Guide** for product questions (how agents work, how to read a run).
+6. Use **On your desk** to reopen tickers finished in this session.
+7. Use **Refresh analysis** when you want a brand-new run instead of a recent saved result.
+
+---
+
+## Project layout
 
 ```text
-backend/            FastAPI (REST API + web UI)
+backend/              FastAPI app, schemas, HTTP middleware
+frontend/web/         Main research desk UI (HTML / CSS / JS)
+frontend/app.py       Optional Streamlit UI
 src/
-  data/             ingestion + sequence preparation
-  model/            LSTM, train, evaluate, save/load
-  pipelines/        sip-data / sip-train / sip-predict
-  agents/           tools, nodes, guardrails, LangGraph analyze
-  memory/           report cache (Redis TTL)
-  monitoring/       agent fixture evals
-feature_store/      Feast definitions + offline parquet
-frontend/web/       Web UI (light/dark) for agents 1–3
-frontend/app.py     Optional Streamlit UI
-notebooks/          Colab GPU training
-scripts/            CLI runners
-outputs/            model artifacts (gitignored)
+  data/               Ingestion and sequence prep
+  model/              LSTM train / evaluate / save-load
+  pipelines/          sip-data / sip-train / sip-predict
+  market/             Company profile + fundamentals snapshot
+  agents/             Tools, nodes, guardrails, Guide, LangGraph analyze
+  memory/             Analyze result cache (Redis TTL)
+  monitoring/         Agent fixture evals
+logger/               Structured logging + request context
+feature_store/        Feast definitions + offline parquet
+notebooks/            Colab GPU training
+scripts/              CLI runners
+tests/                Pytest suite
+outputs/              Model artifacts (gitignored)
 ```
 
-
+---
 
 ## CLI (no UI)
 
 From the project root with the venv active:
 
 ```powershell
-# Guardrail fixtures (no Ollama / no live news)
+# Guardrail fixtures (no live LLM / news required for eval-only)
 python scripts\run_analyze_agents.py --eval-only
 
 # Forecast + agents 1–3
 python scripts\run_analyze_agents.py --ticker NVDA
 
-# Full analyze path (same as POST /analyze)
+# Full analyze path (same idea as POST /analyze)
 python scripts\run_analyze_agents.py --full-analyze --ticker NVDA
 ```
 
 On macOS/Linux use `python scripts/run_analyze_agents.py ...`.
 
-## Data / train / predict pipelines
+---
 
+## Data / train / predict
 
-| Stage          | Command                                                |
-| -------------- | ------------------------------------------------------ |
-| Build features | `sip-data build --tickers ^GSPC NVDA AAPL MSFT`        |
-| Inspect store  | `sip-data inspect`                                     |
-| Train parent   | `sip-train parent --source feature-store`              |
-| Train child    | `sip-train child --ticker NVDA --source feature-store` |
-| Predict        | `sip-predict best --ticker NVDA --horizon 5`           |
+| Stage | Command |
+| --- | --- |
+| Build features | `sip-data build --tickers ^GSPC NVDA AAPL MSFT` |
+| Inspect store | `sip-data inspect` |
+| Train parent | `sip-train parent --source feature-store` |
+| Train child | `sip-train child --ticker NVDA --source feature-store` |
+| Predict | `sip-predict best --ticker NVDA --horizon 5` |
 
+---
 
+## API overview
 
+### `POST /analyze`
 
-## Analyze response
+Runs forecast + Performance + Market + Financial.
 
-`POST /analyze` returns:
+Notable response fields:
 
-- `predictions` — champion forecast + history (code, not LLM)
+- `predictions` — champion forecast and history (code, not LLM)
 - `performance_analysis` / `performance_trend` / `performance_guardrail_ok`
 - `news_summary` / `news_sentiment` / `news_guardrail_ok`
 - `financial_analysis` / `financial_health` / `financial_guardrail_ok`
-- `financials` — normalized Yahoo fundamentals snapshot (code, not LLM)
-- `recommendation` — BULLISH / BEARISH / NEUTRAL (SIDEWAYS → NEUTRAL)
-- `confidence` — Low when serving persistence or repaired output
+- `financials` — normalized fundamentals snapshot (code, not LLM)
+- `company` — company profile for the results header
+- `metric_explanations` — short blurbs for Trend, News, Confidence, Projected move
+- `recommendation` — `BULLISH` / `BEARISH` / `NEUTRAL` (SIDEWAYS → NEUTRAL)
+- `confidence` — `Low` when serving persistence or repaired performance output; otherwise `Medium`
 - `mode` — `performance_news_financial`
-- `cached` / `cache_age_seconds` / `cache_ttl_seconds` — Redis analyze cache metadata
+- `cached` / `cache_age_seconds` / `cache_ttl_seconds`
 
-Redis cache prefix: `analyze-perf-news-fin-v1` (TTL from `ANALYZE_CACHE_TTL_SECONDS`, default 1h).  
-UI shows a cache badge; **Refresh analysis** sends `force_refresh: true` to bypass Redis and re-run the agents.
+Request flag: `force_refresh: true` bypasses the analyze cache.
 
-News: Finnhub company-news when keyed; otherwise Yahoo with ticker relevance filtering. If nothing relevant remains, agent 2 returns `UNAVAILABLE`.
+Cache prefix: `analyze-perf-news-fin-v2` (TTL from `ANALYZE_CACHE_TTL_SECONDS`, default 1 hour).
 
-Fundamentals: Yahoo / yfinance snapshot. Thin coverage becomes `partial` or `UNAVAILABLE` — agent 3 must not invent statement figures.
+### `POST /help-chat`
+
+Guide product Q&A. Body: `{ "message": "...", "history": [] }`.  
+Replies are grounded in a fixed product knowledge pack. Off-topic / trading questions return out of scope.
+
+### News and fundamentals sources
+
+- **News:** Finnhub company-news when keyed; otherwise Yahoo with ticker relevance filtering.
+- **Fundamentals:** Yahoo / yfinance snapshot. Thin coverage becomes `partial` or `UNAVAILABLE`.
+
+---
 
 ## Tests
 
@@ -174,14 +224,20 @@ Fundamentals: Yahoo / yfinance snapshot. Thin coverage becomes `partial` or `UNA
 pytest -q
 ```
 
-
+---
 
 ## Design notes
 
-- Chronological train/validation/test splits
-- Scaler fit on train only; price-space metrics + persistence baseline
-- Agents interpret tools; they do not invent forecast prices, headlines, or fundamentals
-- Agent 1: trend must match numbers
-- Agent 2: drivers must be grounded in fetched news
-- Agent 3: health label and magnitudes must match the fundamentals facts object
+- Forecast prices come from code (trained path or persistence). Agents interpret tool outputs; they do not invent forecast prices, headlines, or fundamentals figures.
+- Performance: trend label must match the forecast path.
+- Market: drivers must be grounded in fetched headlines.
+- Financial: health label and magnitudes must match the fundamentals facts object.
+- Chip explanations are produced once per analyze run by the Performance Analyst module and stored on the response.
+- Chronological train / validation / test splits; scaler fit on train only; price-space metrics with a persistence baseline.
+- Structured JSON logs with request context for local and production runs.
 
+---
+
+## License
+
+MIT (see `pyproject.toml`).
