@@ -16,6 +16,10 @@ from dotenv import load_dotenv
 
 from logger.logger import get_logger
 from src.data.ingestion import normalize_ticker
+from src.market.financials import (
+    format_financials_for_prompt,
+    get_financials,
+)
 from src.pipelines.inference_pipeline import predict_best
 from src.pipelines.training_pipeline import child_artifact_dir, parent_artifact_dir
 
@@ -40,6 +44,20 @@ _TICKER_ALIASES: dict[str, tuple[str, ...]] = {
     "NFLX": ("netflix"),
     "AVGO": ("broadcom"),
     "ORCL": ("oracle"),
+}
+
+# Peer tickers whose headlines can matter for context (market expert).
+_PEER_TICKERS: dict[str, tuple[str, ...]] = {
+    "TSLA": ("RIVN", "LCID", "GM", "F"),
+    "NVDA": ("AMD", "INTC", "AVGO"),
+    "AAPL": ("MSFT", "GOOGL"),
+    "MSFT": ("GOOGL", "AMZN", "ORCL"),
+    "AMZN": ("MSFT", "GOOGL", "WMT"),
+    "GOOGL": ("MSFT", "META", "AMZN"),
+    "GOOG": ("MSFT", "META", "AMZN"),
+    "META": ("GOOGL", "SNAP", "PINS"),
+    "AMD": ("NVDA", "INTC"),
+    "INTC": ("NVDA", "AMD"),
 }
 
 
@@ -107,8 +125,7 @@ def format_forecast_for_prompt(forecast: dict[str, Any]) -> str:
         )
 
     lines = [
-        f"Forecast for {forecast['ticker']} "
-        f"(model={forecast.get('model_source')}, version={forecast.get('model_version')}):",
+        f"Forecast for {forecast['ticker']}:",
         f"Last close {forecast.get('last_close')} on {forecast.get('last_date')}.",
         "Predicted closes:",
     ]
@@ -231,8 +248,8 @@ def _news_from_yahoo(ticker: str, *, limit: int = 5) -> list[dict[str, str]]:
     return items
 
 
-def get_news(ticker: str, *, limit: int = 5) -> dict[str, Any]:
-    """Fetch recent headlines and keep only ticker-relevant ones.
+def get_news(ticker: str, *, limit: int = 6) -> dict[str, Any]:
+    """Fetch recent headlines for the ticker plus a few peer/competitor items.
 
     Finnhub company-news first when keyed; Yahoo otherwise. Irrelevant Yahoo
     market blurbs are dropped so agent 2 does not invent a ticker narrative.
@@ -279,12 +296,32 @@ def get_news(ticker: str, *, limit: int = 5) -> dict[str, Any]:
     articles, dropped = filter_ticker_relevant_articles(
         raw_articles, symbol, limit=limit
     )
+    for article in articles:
+        article["scope"] = "ticker"
+
+    peer_kept: list[dict[str, Any]] = []
+    for peer in _PEER_TICKERS.get(symbol, ())[:3]:
+        try:
+            peer_raw = _news_from_yahoo(peer, limit=4)
+        except Exception as exc:  # noqa: BLE001 - peer news is optional context
+            errors.append(f"peer:{peer}:{exc}")
+            continue
+        kept, _ = filter_ticker_relevant_articles(peer_raw, peer, limit=2)
+        for article in kept:
+            article["scope"] = "peer"
+            article["peer_ticker"] = peer
+            peer_kept.append(article)
+        if len(peer_kept) >= 4:
+            break
+
+    combined = articles + peer_kept
     _log.info(
-        "[news_tool] relevance_filter ticker=%s provider=%s raw=%s kept=%s dropped=%s",
+        "[news_tool] relevance_filter ticker=%s provider=%s raw=%s kept=%s peers=%s dropped=%s",
         symbol,
         provider,
         len(raw_articles),
         len(articles),
+        len(peer_kept),
         dropped,
     )
 
@@ -307,16 +344,17 @@ def get_news(ticker: str, *, limit: int = 5) -> dict[str, Any]:
         }
 
     _log.info(
-        "[news_tool] fetch_ok ticker=%s provider=%s articles=%s",
+        "[news_tool] fetch_ok ticker=%s provider=%s articles=%s peers=%s",
         symbol,
         provider,
         len(articles),
+        len(peer_kept),
     )
     return {
         "status": "ok",
         "ticker": symbol,
         "provider": provider,
-        "articles": articles,
+        "articles": combined,
         "raw_count": len(raw_articles),
         "filtered_out": max(0, len(raw_articles) - len(articles)),
         "warnings": errors,
@@ -332,13 +370,27 @@ def format_news_for_prompt(news: dict[str, Any]) -> str:
             "Do not invent headlines."
         )
 
-    lines = [
-        f"Ticker-relevant news for {news['ticker']} ({news.get('provider')}):"
-    ]
+    primary: list[str] = []
+    related: list[str] = []
     for article in news.get("articles", []):
-        lines.append(
-            f"- ({article.get('date')}) {article.get('headline')}\n"
+        scope = str(article.get("scope") or "ticker")
+        peer = article.get("peer_ticker")
+        label = f"RELATED/COMPETITOR ({peer})" if scope == "peer" and peer else "TICKER"
+        block = (
+            f"- [{label}] ({article.get('date')}) {article.get('headline')}\n"
             f"  {article.get('summary')}\n"
             f"  {article.get('url')}"
         )
+        if scope == "peer":
+            related.append(block)
+        else:
+            primary.append(block)
+
+    lines = [
+        f"Ticker-relevant news for {news['ticker']} ({news.get('provider')}):",
+        *primary,
+    ]
+    if related:
+        lines.append("Related / competitor coverage that may affect the ticker:")
+        lines.extend(related)
     return "\n".join(lines)

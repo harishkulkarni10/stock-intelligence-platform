@@ -10,13 +10,23 @@ from src.agents.news_guardrails import (
     run_news_harness,
     validate_news_analysis,
 )
+from src.agents.financial_guardrails import (
+    build_financial_facts,
+    deterministic_financial_analysis,
+    run_financial_harness,
+    validate_financial_analysis,
+)
 from src.agents.performance_guardrails import (
     build_forecast_facts,
     deterministic_performance_analysis,
     run_performance_harness,
     validate_performance_analysis,
 )
-from src.agents.tools import format_forecast_for_prompt, format_news_for_prompt
+from src.agents.tools import (
+    format_financials_for_prompt,
+    format_forecast_for_prompt,
+    format_news_for_prompt,
+)
 
 PERFORMANCE_EVAL_FIXTURES: tuple[dict[str, Any], ...] = (
     {
@@ -137,11 +147,26 @@ NEWS_EVAL_FIXTURES: tuple[dict[str, Any], ...] = (
             ],
         },
         "expect_allowed": "HAS_ARTICLES",
-        "good_analysis": (
+    "good_analysis": (
             "Sentiment: POSITIVE\n"
-            "Drivers: - NVIDIA beats earnings estimates on strong GPU demand\n"
+            "Headlines:\n"
+            "- NVIDIA beats earnings estimates on strong GPU demand\n"
             "- Analysts raise NVIDIA price targets after guidance lift\n"
-            "Caveat: Coverage is recent but may miss macro risks."
+            "Analysis:\n"
+            "Coverage around NVIDIA is constructive and internally consistent. The earnings "
+            "beat tied to GPU demand and the follow-on lift in analyst targets both point to "
+            "the same underlying story: customers are still expanding AI infrastructure and "
+            "the Street is updating expectations accordingly. That does not remove execution "
+            "or cyclical risk, but for a short-horizon news read the tape is supportive rather "
+            "than conflicted. A careful reader should still open the primary articles, check "
+            "how much of the beat was data-center versus other segments, and note whether "
+            "guidance strength is broad or concentrated. Taken together, the headlines justify "
+            "a POSITIVE sentiment label while leaving room for macro or competitor surprises "
+            "that are not spelled out in this small sample.\n"
+            "Implications:\n"
+            "- Demand and guidance tone currently lean supportive for NVIDIA.\n"
+            "- Target raises reinforce Street confidence but are still opinions, not facts.\n"
+            "Caveats: Coverage is recent but may miss macro risks."
         ),
     },
     {
@@ -165,6 +190,90 @@ NEWS_EVAL_FIXTURES: tuple[dict[str, Any], ...] = (
             "Sentiment: POSITIVE\n"
             "Drivers: - Apple acquires a secret quantum chip startup in Zurich for forty billion dollars overnight\n"
             "Caveat: None."
+        ),
+        "expect_validation_ok": False,
+    },
+)
+
+
+def _healthy_financials(ticker: str = "NVDA") -> dict[str, Any]:
+    metrics = {
+        "revenue": 130_000_000_000.0,
+        "revenue_yoy_pct": 55.0,
+        "gross_margin_pct": 75.0,
+        "operating_margin_pct": 55.0,
+        "net_margin_pct": 50.0,
+        "operating_cashflow": 50_000_000_000.0,
+        "free_cashflow": 40_000_000_000.0,
+        "total_cash": 30_000_000_000.0,
+        "total_debt": 10_000_000_000.0,
+        "debt_to_equity": 25.0,
+        "current_ratio": 3.5,
+        "roe_pct": 90.0,
+        "roa_pct": 40.0,
+        "market_cap": 3_000_000_000_000.0,
+        "pe": 45.0,
+        "ps": 25.0,
+        "pb": 40.0,
+        "ev_ebitda": 35.0,
+    }
+    return {
+        "status": "ok",
+        "ticker": ticker,
+        "name": "NVIDIA Corporation",
+        "sector": "Technology",
+        "industry": "Semiconductors",
+        "currency": "USD",
+        "coverage": "full",
+        "source": "fixture",
+        "metrics": metrics,
+        "signals": {
+            "profitability": "improving",
+            "leverage": "conservative",
+            "valuation": "rich",
+        },
+        "allowed_health": "STRONG",
+        "allowed_numbers": [
+            float(v) for v in metrics.values() if isinstance(v, (int, float))
+        ],
+    }
+
+
+FINANCIAL_EVAL_FIXTURES: tuple[dict[str, Any], ...] = (
+    {
+        "id": "financials_unavailable",
+        "ticker": "ZZZZ",
+        "financials": {
+            "status": "missing",
+            "ticker": "ZZZZ",
+            "coverage": "missing",
+            "allowed_health": "UNAVAILABLE",
+            "metrics": {},
+            "signals": {},
+            "allowed_numbers": [],
+        },
+        "expect_health": "UNAVAILABLE",
+    },
+    {
+        "id": "financials_strong_bundle",
+        "ticker": "NVDA",
+        "financials": _healthy_financials("NVDA"),
+        "expect_health": "STRONG",
+    },
+    {
+        "id": "invented_revenue_must_fail",
+        "ticker": "NVDA",
+        "financials": _healthy_financials("NVDA"),
+        "expect_health": "STRONG",
+        "bad_analysis": (
+            "Health: STRONG\n"
+            "Analysis:\n"
+            "The company secretly printed 999.0B of brand-new revenue overnight while "
+            "keeping every other line item unchanged, which is an impossible jump versus "
+            "the fetched snapshot and must be rejected by grounding checks for safety.\n"
+            "Strengths:\n- Fake boom.\n"
+            "Weaknesses:\n- None.\n"
+            "Caveats: None."
         ),
         "expect_validation_ok": False,
     },
@@ -276,13 +385,69 @@ def evaluate_news_fixtures() -> dict[str, Any]:
     return {"ok": passed, "cases": rows}
 
 
+def evaluate_financial_fixtures() -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for fixture in FINANCIAL_EVAL_FIXTURES:
+        financials = fixture["financials"]
+        facts = build_financial_facts(financials, ticker=fixture["ticker"])
+        row: dict[str, Any] = {
+            "id": fixture["id"],
+            "health_ok": facts.allowed_health == fixture["expect_health"],
+            "allowed_health": facts.allowed_health,
+        }
+        if "bad_analysis" in fixture:
+            check = validate_financial_analysis(fixture["bad_analysis"], facts)
+            row["validation_ok"] = check.ok
+            row["validation_pass"] = check.ok == fixture.get("expect_validation_ok", True)
+            row["errors"] = list(check.errors)
+        else:
+            good = deterministic_financial_analysis(facts)
+            check = validate_financial_analysis(good, facts)
+            row["validation_ok"] = check.ok
+            row["validation_pass"] = check.ok
+
+            class _BadLLM:
+                def invoke(self, messages):
+                    return (
+                        "Health: STRONG\n"
+                        "Analysis:\n"
+                        "Revenue is exactly 777.77B from an undisclosed moon colony contract "
+                        "that does not appear in the fundamentals block at all.\n"
+                        "Strengths:\n- Imaginary contract.\n"
+                        "Weaknesses:\n- None.\n"
+                        "Caveats: none"
+                    )
+
+            recovered = run_financial_harness(
+                ticker=fixture["ticker"],
+                financials=financials,
+                financials_raw=format_financials_for_prompt(financials),
+                llm=_BadLLM(),
+                max_attempts=1,
+            )
+            row["harness_recovers"] = (
+                recovered["financial_guardrail_ok"]
+                and recovered["financial_health"] == fixture["expect_health"]
+                and "777.77" not in recovered["financial_analysis"]
+            )
+        rows.append(row)
+
+    passed = all(
+        r["health_ok"] and r.get("validation_pass", True) and r.get("harness_recovers", True)
+        for r in rows
+    )
+    return {"ok": passed, "cases": rows}
+
+
 def evaluate_all_agent_fixtures() -> dict[str, Any]:
     performance = evaluate_performance_fixtures()
     news = evaluate_news_fixtures()
+    financial = evaluate_financial_fixtures()
     return {
-        "ok": performance["ok"] and news["ok"],
+        "ok": performance["ok"] and news["ok"] and financial["ok"],
         "performance": performance,
         "news": news,
+        "financial": financial,
     }
 
 
@@ -292,6 +457,9 @@ class AgentEvaluator:
 
     def evaluate_news(self) -> dict[str, Any]:
         return evaluate_news_fixtures()
+
+    def evaluate_financial(self) -> dict[str, Any]:
+        return evaluate_financial_fixtures()
 
     def evaluate_all(self) -> dict[str, Any]:
         return evaluate_all_agent_fixtures()

@@ -5,23 +5,30 @@ Pure logic stays LLM-free so CI can eval fixtures without Ollama or live news AP
 
 from __future__ import annotations
 
+import logging
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
-from logger.logger import get_logger
+from logger.context import set_ticker
+from logger.logger import get_logger, log_event
 from src.agents.llm import message_text
 
-logger = get_logger()
+logger = get_logger("sip.agent2.harness")
 
 SENTIMENTS = ("POSITIVE", "NEGATIVE", "MIXED", "NEUTRAL", "UNAVAILABLE")
+MIN_ANALYSIS_CHARS = 180
 _SENTIMENT_LINE_RE = re.compile(
     r"(?im)^\s*sentiment\s*:\s*(positive|negative|mixed|neutral|unavailable)\b"
 )
-# Normalize for overlap checks: letters/digits only, lowercased tokens.
+_ANALYSIS_BLOCK_RE = re.compile(
+    r"(?is)^\s*analysis\s*:\s*(.+?)(?=^\s*(?:headlines|implications|themes|drivers|caveats?|key points)\s*:|\Z)",
+    re.MULTILINE,
+)
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
@@ -66,7 +73,7 @@ def build_news_facts(news: dict[str, Any] | None, *, ticker: str = "") -> NewsFa
     status = str(payload.get("status") or "error")
     headlines = tuple(extract_headlines(payload))
     provider = payload.get("provider")
-    provider_name = str(provider) if provider else None
+    provider_name = str(provider) if provider else None 
 
     parts: list[str] = []
     for article in payload.get("articles") or []:
@@ -83,8 +90,6 @@ def build_news_facts(news: dict[str, Any] | None, *, ticker: str = "") -> NewsFa
     if status != "ok" or not headlines:
         allowed = "UNAVAILABLE"
     else:
-        # LLM must choose among these; we do not auto-pick POSITIVE/NEGATIVE from keywords
-        # in v1 — only enforce UNAVAILABLE vs "some real articles exist".
         allowed = "HAS_ARTICLES"
 
     return NewsFacts(
@@ -110,31 +115,57 @@ def parse_sentiment_label(text: str) -> str | None:
     return None
 
 
-def _drivers_grounded(text: str, facts: NewsFacts, *, min_overlap: int = 2) -> bool:
-    """Require driver lines to share tokens with fetched article text."""
+def _analysis_body(text: str) -> str:
+    match = _ANALYSIS_BLOCK_RE.search(text or "")
+    if match:
+        return match.group(1).strip()
+    for line in (text or "").splitlines():
+        if re.match(r"(?i)^\s*analysis\s*:", line):
+            return re.sub(r"(?i)^\s*analysis\s*:", "", line).strip()
+    return ""
+
+
+def _headlines_section_bullets(text: str) -> list[str]:
+    """Bullets under Headlines: (or legacy Drivers:/Themes:) — not Implications."""
+    lines = (text or "").splitlines()
+    bullets: list[str] = []
+    in_headlines = False
+    for line in lines:
+        stripped = line.strip()
+        lower = stripped.lower()
+        if re.match(r"(?i)^(headlines|drivers|themes)\s*:", stripped):
+            in_headlines = True
+            rest = re.sub(r"(?i)^(headlines|drivers|themes)\s*:", "", stripped).strip()
+            if rest.startswith(("-", "*")):
+                bullets.append(rest.lstrip("-* ").strip())
+            continue
+        if re.match(
+            r"(?i)^(analysis|implications|caveats?|key points|sentiment)\s*:",
+            stripped,
+        ):
+            in_headlines = False
+            continue
+        if in_headlines and (stripped.startswith("-") or stripped.startswith("*")):
+            bullets.append(stripped.lstrip("-* ").strip())
+    return bullets
+
+
+def _bullet_lines_grounded(text: str, facts: NewsFacts, *, min_overlap: int = 2) -> bool:
+    """Require Headlines bullets to share tokens with fetched articles."""
     if facts.allowed_sentiment == "UNAVAILABLE":
         return True
     allowed = _normalize_tokens(facts.article_blob)
     if not allowed:
         return False
-    driver_lines = [
-        line
-        for line in (text or "").splitlines()
-        if line.strip().lower().startswith("drivers:")
-        or line.strip().startswith("-")
-        or line.strip().startswith("*")
-    ]
-    if not driver_lines:
-        # Fall back to whole body minus the Sentiment line.
+    bullets = _headlines_section_bullets(text)
+    if not bullets:
         body = _SENTIMENT_LINE_RE.sub("", text or "")
-        overlap = len(_normalize_tokens(body) & allowed)
-        return overlap >= min_overlap
-    overlap = len(_normalize_tokens("\n".join(driver_lines)) & allowed)
-    return overlap >= min_overlap
+        return len(_normalize_tokens(body) & allowed) >= min_overlap
+    return len(_normalize_tokens("\n".join(bullets)) & allowed) >= min_overlap
 
 
 def validate_news_analysis(text: str, facts: NewsFacts) -> NewsGuardrailResult:
-    """Hard checks: sentiment label + no invented headline material."""
+    """Hard checks: sentiment label, grounded headlines, substantial Analysis."""
     errors: list[str] = []
     parsed = parse_sentiment_label(text)
     if parsed is None:
@@ -146,17 +177,19 @@ def validate_news_analysis(text: str, facts: NewsFacts) -> NewsGuardrailResult:
     elif facts.allowed_sentiment == "HAS_ARTICLES" and parsed == "UNAVAILABLE":
         errors.append("sentiment_unavailable_despite_articles")
 
-    if facts.allowed_sentiment == "HAS_ARTICLES" and not _drivers_grounded(text, facts):
-        errors.append("ungrounded_drivers")
+    if facts.allowed_sentiment == "HAS_ARTICLES":
+        if not re.search(r"(?im)^\s*analysis\s*:", text or ""):
+            errors.append("missing_analysis_section")
+        else:
+            body = _analysis_body(text)
+            if len(body) < MIN_ANALYSIS_CHARS:
+                errors.append(f"analysis_too_short:{len(body)}<{MIN_ANALYSIS_CHARS}")
+        if not _bullet_lines_grounded(text, facts):
+            errors.append("ungrounded_drivers")
 
-    # Reject a whole headline-looking line that shares almost no tokens with sources.
-    if facts.headlines and parsed and parsed != "UNAVAILABLE":
         source_tokens = _normalize_tokens(facts.article_blob)
-        for line in (text or "").splitlines():
-            cleaned = line.strip()
+        for cleaned in _headlines_section_bullets(text):
             if len(cleaned) < 40:
-                continue
-            if cleaned.lower().startswith(("sentiment:", "caveat:", "drivers:")):
                 continue
             line_tokens = _normalize_tokens(cleaned)
             if len(line_tokens) >= 6 and len(line_tokens & source_tokens) == 0:
@@ -171,15 +204,30 @@ def deterministic_news_analysis(facts: NewsFacts) -> str:
     if facts.allowed_sentiment == "UNAVAILABLE":
         return (
             "Sentiment: UNAVAILABLE\n"
-            "Drivers: No reliable headlines were fetched for "
-            f"{facts.ticker or 'this ticker'}.\n"
-            "Caveat: Treat news coverage as missing; do not invent stories."
+            "Headlines:\n"
+            "- No usable ticker-relevant articles in the fetch window.\n"
+            "Analysis:\n"
+            "No reliable ticker-relevant headlines were available, so a news-based "
+            "view cannot be formed without inventing coverage. Treat news as missing "
+            "for this run and rely on the forecast path plus primary sources you trust.\n"
+            "Implications:\n"
+            "- Do not invent competitor or company events to fill the gap.\n"
+            "Caveats: Treat news as missing; do not invent stories."
         )
+
+    headline_lines = "\n".join(f"- {h}" for h in facts.headlines[:4]) or "- See fetched headlines"
     joined = "; ".join(facts.headlines[:3])
     return (
         "Sentiment: MIXED\n"
-        f"Drivers: - Coverage includes: {joined}\n"
-        "Caveat: Fallback summary used after guardrail failure; verify sources."
+        f"Headlines:\n{headline_lines}\n"
+        "Analysis:\n"
+        "Headlines were available but a full model write-up could not be validated. "
+        f"Coverage includes: {joined}. Treat tone as provisional and open the source "
+        "links; peer items are context only, not company confirmation.\n"
+        "Implications:\n"
+        "- Verify each headline against the linked article before acting on it.\n"
+        "- Thin or mixed coverage usually means waiting for clearer confirmation.\n"
+        "Caveats: Fallback after guardrail failure; coverage may be thin or stale."
     )
 
 
@@ -190,12 +238,17 @@ def repair_news_analysis(text: str, facts: NewsFacts) -> str:
         return deterministic_news_analysis(facts)
     if not body:
         return deterministic_news_analysis(facts)
-    if not re.search(r"(?im)^\s*drivers\s*:", body):
-        preview = "; ".join(facts.headlines[:2]) or "see fetched headlines"
-        body = f"Drivers: - {preview}\n{body}"
-    if not re.search(r"(?im)^\s*caveat\s*:", body):
-        body = f"{body}\nCaveat: News can be incomplete or delayed."
-    # Default repaired label when articles exist but model omitted/broke sentiment.
+    if not re.search(r"(?im)^\s*headlines\s*:", body):
+        bullets = "\n".join(f"- {h}" for h in facts.headlines[:6])
+        body = f"Headlines:\n{bullets}\n{body}"
+    if not re.search(r"(?im)^\s*analysis\s*:", body):
+        preview = "; ".join(facts.headlines[:3]) or "see fetched headlines"
+        body = (
+            f"{body}\nAnalysis:\nCoverage includes {preview}. "
+            + deterministic_news_analysis(facts).split("Analysis:\n", 1)[-1].split("Implications:", 1)[0]
+        )
+    if not re.search(r"(?im)^\s*caveat", body):
+        body = f"{body}\nCaveats: News can be incomplete or delayed."
     sentiment = parse_sentiment_label(text) or "MIXED"
     if sentiment == "UNAVAILABLE":
         sentiment = "MIXED"
@@ -215,32 +268,48 @@ NEWS:
 There are no usable headlines. Write EXACTLY:
 
 Sentiment: UNAVAILABLE
-Drivers: No reliable headlines were fetched.
-Caveat: Do not invent news.
+Headlines:
+- No usable articles in the fetch window.
+Analysis:
+No reliable ticker-relevant headlines were fetched, so a news-based view cannot be formed without inventing coverage. Explain briefly why inventing stories would be harmful and that the user should treat news as missing.
+Implications:
+- Do not invent competitor or company events.
+Caveats: Do not invent news.
 
 Rules:
 - Do not invent headlines or companies.
 - Do not discuss price forecasts.
 """
 
-    return f"""You are a market strategist summarizing news sentiment for {ticker}.
+    bullets = "\n".join(f"- {h}" for h in facts.headlines[:5])
+    return f"""You are a market strategist. Write a compact news briefing for {ticker} — clear and useful, not an essay.
 
-NEWS:
+NEWS (ticker + any RELATED/COMPETITOR items):
 {news_raw}
 
-Write EXACTLY this structure:
+Priority headlines:
+{bullets}
+
+Use EXACTLY this structure:
+
 Sentiment: POSITIVE|NEGATIVE|MIXED|NEUTRAL
-Drivers: - <bullet grounded in the NEWS headlines/summaries above>
-- <optional second bullet>
-Caveat: <one sentence about coverage quality, staleness, or uncertainty>
+Headlines:
+- <3–5 important bullets, close to source wording>
+Analysis:
+<1–2 short paragraphs (about 80–140 words). Synthesize what the tape implies for {ticker}; note conflicts; mention peer/competitor items only if present in NEWS. Do not restate every headline.>
+Implications:
+- <crisp takeaway>
+- <crisp takeaway>
+- <optional third takeaway>
+Caveats:
+<1–2 sentences on coverage gaps / uncertainty>
 
 Rules:
-- Use ONLY information present in NEWS.
-- Articles were pre-filtered for this ticker; still do not invent events.
-- Do not invent headlines, numbers, or events.
-- If headlines conflict, use MIXED.
-- Do not discuss LSTM forecasts or price targets.
-- Do not add Market Stance or Confidence lines.
+- Medium length only — no long essays.
+- Vary wording from run to run; keep the same facts and Sentiment label.
+- Use ONLY information in NEWS; do not invent events.
+- Conflicting headlines → MIXED.
+- Do not discuss price forecasts.
 """
 
 
@@ -254,19 +323,25 @@ def run_news_harness(
     max_attempts: int = 2,
 ) -> dict[str, Any]:
     """Prompt → validate → retry → repair/fallback. Returns summary + metadata."""
+    set_ticker(ticker)
     facts = build_news_facts(news, ticker=ticker)
     call = invoke or (lambda messages: llm.invoke(messages))
     attempts: list[dict[str, Any]] = []
     text = ""
     result = NewsGuardrailResult(ok=False, parsed_sentiment=None, errors=("not_run",))
+    harness_started = time.perf_counter()
 
-    logger.info(
-        "[agent2.harness] begin ticker=%s status=%s provider=%s headlines=%s allowed=%s",
-        ticker,
-        facts.status,
-        facts.provider,
-        len(facts.headlines),
-        facts.allowed_sentiment,
+    log_event(
+        logger,
+        "agent2_harness_begin",
+        step="agent2_begin",
+        status="ok",
+        data={
+            "news_status": facts.status,
+            "provider": facts.provider,
+            "n_headlines": len(facts.headlines),
+            "allowed_sentiment": facts.allowed_sentiment,
+        },
     )
 
     for attempt in range(1, max_attempts + 1):
@@ -275,17 +350,38 @@ def run_news_harness(
             prompt += (
                 "\n\nPREVIOUS OUTPUT FAILED GUARDRAILS. "
                 f"Errors: {', '.join(result.errors)}. "
-                "Respond again using only the NEWS block."
+                "Respond again with a medium-length Analysis using only the NEWS block."
             )
-            logger.info(
-                "[agent2.harness] retry ticker=%s attempt=%s prior_errors=%s",
-                ticker,
-                attempt,
-                list(result.errors),
+            log_event(
+                logger,
+                "agent2_retry",
+                step="agent2_retry",
+                status="retry",
+                metrics={"attempt": attempt},
+                data={"prior_errors": list(result.errors)},
             )
         else:
-            logger.info("[agent2.harness] llm_invoke ticker=%s attempt=%s", ticker, attempt)
-        response = call([SystemMessage(content=prompt)])
+            log_event(
+                logger,
+                "agent2_llm_invoke",
+                step="agent2_llm",
+                status="started",
+                metrics={"attempt": attempt},
+            )
+
+        invoke_started = time.perf_counter()
+        response = call(
+            [
+                SystemMessage(
+                    content=(
+                        "You write compact market news briefings. "
+                        "Stay medium length — useful, not long essays."
+                    )
+                ),
+                HumanMessage(content=prompt),
+            ]
+        )
+        invoke_ms = (time.perf_counter() - invoke_started) * 1000
         text = message_text(response)
         result = validate_news_analysis(text, facts)
         attempts.append(
@@ -294,40 +390,69 @@ def run_news_harness(
                 "ok": result.ok,
                 "errors": list(result.errors),
                 "parsed_sentiment": result.parsed_sentiment,
+                "chars": len(text or ""),
+                "duration_ms": round(invoke_ms, 2),
             }
         )
-        logger.info(
-            "[agent2.harness] validate ticker=%s attempt=%s ok=%s sentiment=%s errors=%s",
-            ticker,
-            attempt,
-            result.ok,
-            result.parsed_sentiment,
-            list(result.errors),
+        log_event(
+            logger,
+            "agent2_validation",
+            step="agent2_validation",
+            status="success" if result.ok else "failed",
+            duration_ms=invoke_ms,
+            metrics={
+                "attempt": attempt,
+                "chars": len(text or ""),
+                "ok": result.ok,
+            },
+            data={
+                "sentiment": result.parsed_sentiment,
+                "errors": list(result.errors),
+            },
         )
         if result.ok:
             break
 
     repaired = False
     if not result.ok:
-        logger.warning(
-            "[agent2.harness] repair ticker=%s after_attempts=%s",
-            ticker,
-            max_attempts,
+        log_event(
+            logger,
+            "agent2_repair",
+            level=logging.WARNING,
+            step="agent2_repair",
+            status="repair",
+            metrics={"after_attempts": max_attempts},
         )
         text = repair_news_analysis(text, facts)
         result = validate_news_analysis(text, facts)
         repaired = True
         if not result.ok:
-            logger.warning("[agent2.harness] deterministic_fallback ticker=%s", ticker)
+            log_event(
+                logger,
+                "agent2_deterministic_fallback",
+                level=logging.WARNING,
+                step="agent2_fallback",
+                status="fallback",
+            )
             text = deterministic_news_analysis(facts)
             result = validate_news_analysis(text, facts)
 
-    logger.info(
-        "[agent2.harness] end ticker=%s sentiment=%s ok=%s repaired=%s",
-        ticker,
-        result.parsed_sentiment,
-        result.ok,
-        repaired,
+    total_ms = (time.perf_counter() - harness_started) * 1000
+    log_event(
+        logger,
+        "agent2_harness_end",
+        step="agent2_end",
+        status="success" if result.ok else "failed",
+        duration_ms=total_ms,
+        metrics={
+            "repaired": repaired,
+            "chars": len(text or ""),
+            "attempts": len(attempts),
+        },
+        data={
+            "sentiment": result.parsed_sentiment,
+            "guardrail_ok": result.ok,
+        },
     )
 
     return {
@@ -339,6 +464,7 @@ def run_news_harness(
         "news_guardrail_errors": list(result.errors),
         "news_repaired": repaired,
         "news_attempts": attempts,
+        "news_duration_ms": round(total_ms, 2),
         "news_facts": {
             "status": facts.status,
             "provider": facts.provider,

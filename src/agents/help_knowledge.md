@@ -1,0 +1,90 @@
+Stock Intelligence — Guide knowledge (user-facing only)
+
+Never mention databases, servers, model types, libraries, vendors, env vars, or API fields.
+
+## Product
+Stock Intelligence is an equity research desk in the browser. You search a ticker, run analysis, and get one packet of results: a near-term forecast chart, company overview, three specialist notes, and a sources list. It is research support only. It does not place trades and does not tell you to buy or sell.
+
+## End-to-end flow
+1. Enter a ticker and click Run agents.
+2. A forecast chart is built for that ticker (history plus a short projected path).
+3. Performance analyst reads that path and writes a trend note.
+4. Market expert pulls relevant headlines and writes a news briefing.
+5. Financial analyst reviews fundamentals and writes a health note.
+6. Results open with summary chips, chart, agent tabs, and Sources.
+7. On your desk keeps finished analyses for this visit so you can compare while another ticker runs. Refreshing or leaving the page clears that list.
+
+## Results page map
+- Summary chips: Trend, News, Confidence, Projected move (and related labels).
+- Company overview: name, sector/industry context, short company summary when available.
+- Price and forecast chart: solid line = observed closes; dashed line = forecast; range pills (1M, 6M, 1Y, 5Y, MAX); Reset restores the chart view.
+- Agent tabs: Performance analyst, Market expert, Financial analyst.
+- Sources: headlines used for the news note (open links to verify).
+- Recent-result badge: appears when you are seeing a recent saved result instead of waiting through a full new run.
+- Refresh analysis: forces a brand-new run now.
+- On your desk (sidebar): reopen any finished ticker from this visit without re-running.
+
+## Forecast chart (what users should understand)
+- Shows recent price history and a short forward path for the next sessions.
+- Projected move is the change from the last close to the final forecast point.
+- Agents explain this chart; they should not invent different prices than the chart shows.
+- If confidence is Low, treat the path as less reliable — often a simpler fallback path or a note that needed extra checking.
+
+## Performance analyst (Agent 1)
+Role: Explain what the forecast path implies for near-term direction.
+Reads: Only the forecast chart path and related path metrics (not news, not financial statements).
+Writes: A compact research note covering trend, how orderly the path looks, projected move framing, and caveats.
+Labels you may see:
+- Trend: BULLISH, BEARISH, or NEUTRAL (sometimes described as rising / falling / flat or sideways).
+- Confidence: can be Low when the path is a simpler fallback or the note needed extra checking. Low confidence is a caution flag, not a crash.
+How to use it:
+- Confirm the trend claim against the chart direction and projected move.
+- Read caveats before trusting a strong-sounding stance.
+- Do not treat Performance alone as a full investment view — pair it with news and fundamentals.
+
+## Market expert (Agent 2)
+Role: Brief the current news tape for the ticker.
+Reads: Recent headlines tied to the ticker (sometimes peer context).
+Writes: Sentiment / tone, short analysis, implications, grounded in the headlines you can open under Sources.
+Labels you may see:
+- News tone such as POSITIVE, NEGATIVE, MIXED, or UNAVAILABLE.
+- UNAVAILABLE means there were not enough useful headlines — the desk will not invent a news story.
+How to use it:
+- Open Sources and check that key claims match real headlines.
+- Thin or stale coverage means treat the briefing lightly.
+- News can disagree with the forecast path; that disagreement is useful signal, not an error.
+
+## Financial analyst (Agent 3)
+Role: Assess company fundamentals health from a fundamentals snapshot.
+Reads: Figures such as revenue, margins, cash, leverage, and valuation-style metrics when available.
+Writes: Health label, strengths, weaknesses, and caveats.
+Labels you may see:
+- Health: STRONG, ADEQUATE, STRESSED, or UNAVAILABLE.
+- UNAVAILABLE or a thinner note means coverage was limited — figures are not invented.
+How to use it:
+- Match any magnitude claims to what the note itself shows.
+- Stressed health with a calm forecast (or the reverse) is a prompt to dig deeper, not to ignore one side.
+- Fundamentals move slower than headlines; do not expect them to explain every one-day move.
+
+## How to read a finished run (recommended order)
+1. Glance at summary chips for Trend, News, Health/confidence, and projected move.
+2. Open the forecast chart and note direction and projected move.
+3. Read Performance for path interpretation and caveats.
+4. Read Market expert and skim Sources.
+5. Read Financial for balance-sheet / profitability health.
+6. Ask whether the three views agree. Agreement supports a clearer picture; disagreement is often the interesting part.
+7. Treat Low confidence, UNAVAILABLE labels, or thin notes as caution — not as buy/sell instructions.
+
+## On your desk and recent saved results
+- On your desk: visit-only tray of analyses you already finished in this browser session. Clears on refresh or when you leave.
+- While a later ticker is still running, you can keep reading earlier ready tickers from On your desk.
+- Recent saved result: if you run the same ticker again soon, you may get the prior result faster. A badge shows when that happens.
+- Refresh analysis: run again from scratch when you want the newest pass.
+
+## Limits of this desk
+- Research support only — no trade placement, no portfolio management, no personalized buy/sell advice.
+- Specialists explain tool outputs; they should not invent prices, headlines, or statement figures.
+- Guide (this assistant) explains the product and agents — not live ticker recommendations or general company trivia.
+
+## Follow-up topics users often need
+Performance analyst, Market expert, Financial analyst, How to read a run, Forecast chart, On your desk, Refresh analysis, What this desk is

@@ -5,28 +5,35 @@ Pure logic stays LLM-free so CI can eval fixtures without Ollama.
 
 from __future__ import annotations
 
+import logging
 import math
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
-from logger.logger import get_logger
+from logger.context import set_ticker
+from logger.logger import get_logger, log_event
 from src.agents.llm import message_text
 
-logger = get_logger()
+logger = get_logger("sip.agent1.harness")
 
 TRENDS = ("BULLISH", "BEARISH", "SIDEWAYS")
-# Relative move below this → SIDEWAYS (matches persistence / noise).
 DEFAULT_SIDEWAYS_THRESHOLD = 0.005
-# Prefer decimals / $amounts so years like 2026 are not treated as prices.
+MIN_ANALYSIS_CHARS = 180
+# Prefer $amounts / multi-digit decimals; skip years and percentages like 0.72%.
 _PRICE_RE = re.compile(
-    r"\$([\d,]+\.\d+)|(?<![\d.$])(\d+\.\d{2,})(?![\d])"
+    r"\$([\d,]+\.\d+)|(?<![\d.$])(\d{2,}\.\d{2,})(?!\d)(?!\s*(?:%|percent|pct)\b)"
 )
 _TREND_LINE_RE = re.compile(
     r"(?im)^\s*trend\s*:\s*(bullish|bearish|side[\s-]?ways|neutral)\b"
+)
+_ANALYSIS_BLOCK_RE = re.compile(
+    r"(?is)^\s*analysis\s*:\s*(.+?)(?=^\s*(?:key points|caveats?|range|trend)\s*:|\Z)",
+    re.MULTILINE,
 )
 
 
@@ -54,7 +61,7 @@ class GuardrailResult:
 
 def _as_float(value: Any) -> float | None:
     try:
-        if value is None:       # type: ignore                                                                                                                          
+        if value is None:
             return None
         number = float(value)
     except (TypeError, ValueError):
@@ -86,7 +93,7 @@ def extract_prices_from_text(text: str) -> list[float]:
         value = _as_float(raw)
         if value is not None:
             found.append(value)
-    return found    
+    return found
 
 
 def expected_trend_from_prices(
@@ -118,7 +125,6 @@ def build_forecast_facts(
 ) -> ForecastFacts:
     prices = extract_prices_from_forecast(forecast)
     if not prices:
-        # Skip the header line noise; keep numeric forecast lines.
         prices = extract_prices_from_text(forecast_text)
     last_close = _as_float((forecast or {}).get("last_close"))
     trend = expected_trend_from_prices(
@@ -160,13 +166,24 @@ def _price_allowed(value: float, allowed: tuple[float, ...], *, atol: float) -> 
     return any(abs(value - ref) <= atol for ref in allowed)
 
 
+def _analysis_body(text: str) -> str:
+    match = _ANALYSIS_BLOCK_RE.search(text or "")
+    if match:
+        return match.group(1).strip()
+    # Fallback: everything after the first Analysis: label on one line.
+    for line in (text or "").splitlines():
+        if re.match(r"(?i)^\s*analysis\s*:", line):
+            return re.sub(r"(?i)^\s*analysis\s*:", "", line).strip()
+    return ""
+
+
 def validate_performance_analysis(
     text: str,
     facts: ForecastFacts,
     *,
     atol: float | None = None,
 ) -> GuardrailResult:
-    """Hard checks: trend matches numbers; no invented prices."""
+    """Hard checks: trend matches numbers; no invented prices; real Analysis section."""
     errors: list[str] = []
     parsed = parse_trend_label(text)
     if parsed is None:
@@ -175,6 +192,13 @@ def validate_performance_analysis(
         errors.append(
             f"trend_mismatch:got={parsed}:expected={facts.expected_trend}"
         )
+
+    if not re.search(r"(?im)^\s*analysis\s*:", text or ""):
+        errors.append("missing_analysis_section")
+    else:
+        body = _analysis_body(text)
+        if len(body) < MIN_ANALYSIS_CHARS:
+            errors.append(f"analysis_too_short:{len(body)}<{MIN_ANALYSIS_CHARS}")
 
     allowed = facts.allowed_prices
     if allowed:
@@ -186,17 +210,43 @@ def validate_performance_analysis(
     return GuardrailResult(ok=not errors, parsed_trend=parsed, errors=tuple(errors))
 
 
+def _path_narrative(facts: ForecastFacts, ticker: str) -> str:
+    prices = list(facts.prices)
+    if not prices:
+        return (
+            f"No usable forecast sessions were available for {ticker}, so the path "
+            "cannot be interpreted beyond a placeholder SIDEWAYS framing."
+        )
+    last = facts.last_close
+    start = float(last) if last is not None else float(prices[0])
+    end = float(prices[-1])
+    move_pct = ((end - start) / abs(start) * 100.0) if start else 0.0
+    move_words = f"{move_pct:+.2f} percent"
+    return (
+        f"For {ticker}, the path ends at {end:.4f} versus last close {start:.4f} "
+        f"({move_words}), spanning {facts.low:.4f} to {facts.high:.4f}. "
+        f"That supports a {facts.expected_trend} label on this short horizon: "
+        "a clear staircase looks more decisive than a narrow or choppy band. "
+        "Treat it as chart framing only — a few model sessions, not a valuation call."
+    )
+
+
 def deterministic_performance_analysis(facts: ForecastFacts, ticker: str) -> str:
     """Code fallback when the LLM fails guardrails after retry."""
     if facts.low is not None and facts.high is not None:
-        range_line = f"Range: {facts.low:.4f} – {facts.high:.4f} (from forecast only)"
+        range_line = f"Range: {facts.low:.4f} – {facts.high:.4f}"
     else:
-        range_line = "Range: unavailable (no forecast prices)"
+        range_line = "Range: unavailable"
+    narrative = _path_narrative(facts, ticker)
     return (
         f"Trend: {facts.expected_trend}\n"
         f"{range_line}\n"
-        f"Caution: Forecast for {ticker} may be a weak or baseline path; "
-        f"treat model uncertainty as high and do not invent levels."
+        f"Analysis:\n{narrative}\n"
+        "Key points:\n"
+        f"- Label is {facts.expected_trend} from last close to the final forecast session.\n"
+        "- Range is only the min/max of those forecasted prices.\n"
+        "- Short horizons and flat paths mean lower directional conviction.\n"
+        "Caveats: Model paths can miss news shocks; research support only, not advice."
     )
 
 
@@ -210,7 +260,9 @@ def repair_performance_analysis(
     if facts.low is not None and facts.high is not None and not re.search(
         r"(?i)\brange\s*:", body
     ):
-        body = f"Range: {facts.low:.4f} – {facts.high:.4f} (from forecast only)\n{body}"
+        body = f"Range: {facts.low:.4f} – {facts.high:.4f}\n{body}"
+    if not re.search(r"(?im)^\s*analysis\s*:", body):
+        body = f"{body}\nAnalysis:\n{_path_narrative(facts, ticker)}"
     repaired = f"Trend: {facts.expected_trend}\n{body}".strip()
     if validate_performance_analysis(repaired, facts).ok:
         return repaired
@@ -223,26 +275,41 @@ def build_performance_prompt(ticker: str, forecast_text: str, facts: ForecastFac
         if facts.low is not None and facts.high is not None
         else "use only prices present in FORECAST DATA"
     )
-    return f"""You are a Performance Analyst for equities.
-Analyze this model forecast for {ticker}.
+    session_lines = "\n".join(
+        f"  - session {i + 1}: {price:.4f}" for i, price in enumerate(facts.prices)
+    ) or "  - (no sessions)"
+    return f"""You are a Performance Analyst. Write a compact research note for {ticker} — useful and specific, not an essay.
 
 FORECAST DATA:
 {forecast_text}
 
-DETERMINISTIC FACTS (do not contradict):
-- Required trend label: {facts.expected_trend}
-- Allowed price range from forecast: {range_hint}
+SESSIONS:
+{session_lines}
+Last close: {facts.last_close}
 
-Write EXACTLY this structure (3 lines, then optional one short sentence):
+LOCKED:
+- Trend line MUST be: Trend: {facts.expected_trend}
+- Range only from forecast prices: {range_hint}
+
+Use EXACTLY this structure:
+
 Trend: {facts.expected_trend}
-Range: <low> – <high> using only FORECAST DATA prices
-Caution: <one sentence about model uncertainty>
+Range: <low> – <high>
+Analysis:
+<1–2 short paragraphs (about 80–140 words total). Cover path shape, move vs last close, and how decisive {facts.expected_trend} looks. No filler.>
+Key points:
+- <one crisp sentence>
+- <one crisp sentence>
+- <one crisp sentence>
+Caveats:
+<1–2 sentences on uncertainty / not advice>
 
 Rules:
-- The Trend line MUST be exactly: Trend: {facts.expected_trend}
-- If prices are flat / nearly flat, that is SIDEWAYS — never call it Bullish or Bearish.
-- Do not invent prices that are not in FORECAST DATA.
-- Do not add Market Stance or Confidence lines.
+- Medium length only — do not write long essays or step-by-step % for every session.
+- Vary wording from run to run; keep the same facts and Trend label.
+- Do not invent prices outside FORECAST DATA.
+- Do not discuss news.
+- Flat / near-flat paths → SIDEWAYS.
 """
 
 
@@ -256,17 +323,23 @@ def run_performance_harness(
     max_attempts: int = 2,
 ) -> dict[str, Any]:
     """Prompt → validate → retry → repair/fallback. Returns analysis + metadata."""
+    set_ticker(ticker)
     facts = build_forecast_facts(forecast, forecast_text)
     call = invoke or (lambda messages: llm.invoke(messages))
     attempts: list[dict[str, Any]] = []
     text = ""
     result = GuardrailResult(ok=False, parsed_trend=None, errors=("not_run",))
+    harness_started = time.perf_counter()
 
-    logger.info(
-        "[agent1.harness] begin ticker=%s expected_trend=%s prices=%s",
-        ticker,
-        facts.expected_trend,
-        len(facts.prices),
+    log_event(
+        logger,
+        "agent1_harness_begin",
+        step="agent1_begin",
+        status="ok",
+        data={
+            "expected_trend": facts.expected_trend,
+            "n_prices": len(facts.prices),
+        },
     )
 
     for attempt in range(1, max_attempts + 1):
@@ -275,17 +348,39 @@ def run_performance_harness(
             prompt += (
                 "\n\nPREVIOUS OUTPUT FAILED GUARDRAILS. "
                 f"Errors: {', '.join(result.errors)}. "
-                f"Respond again with Trend: {facts.expected_trend} exactly."
+                f"Respond again with Trend: {facts.expected_trend} exactly, "
+                "and a medium-length Analysis (1–2 short paragraphs)."
             )
-            logger.info(
-                "[agent1.harness] retry ticker=%s attempt=%s prior_errors=%s",
-                ticker,
-                attempt,
-                list(result.errors),
+            log_event(
+                logger,
+                "agent1_retry",
+                step="agent1_retry",
+                status="retry",
+                metrics={"attempt": attempt},
+                data={"prior_errors": list(result.errors)},
             )
         else:
-            logger.info("[agent1.harness] llm_invoke ticker=%s attempt=%s", ticker, attempt)
-        response = call([SystemMessage(content=prompt)])
+            log_event(
+                logger,
+                "agent1_llm_invoke",
+                step="agent1_llm",
+                status="started",
+                metrics={"attempt": attempt},
+            )
+
+        invoke_started = time.perf_counter()
+        response = call(
+            [
+                SystemMessage(
+                    content=(
+                        "You write compact equity research notes. "
+                        "Stay medium length — useful, not long essays."
+                    )
+                ),
+                HumanMessage(content=prompt),
+            ]
+        )
+        invoke_ms = (time.perf_counter() - invoke_started) * 1000
         text = message_text(response)
         result = validate_performance_analysis(text, facts)
         attempts.append(
@@ -294,40 +389,66 @@ def run_performance_harness(
                 "ok": result.ok,
                 "errors": list(result.errors),
                 "parsed_trend": result.parsed_trend,
+                "chars": len(text or ""),
+                "duration_ms": round(invoke_ms, 2),
             }
         )
-        logger.info(
-            "[agent1.harness] validate ticker=%s attempt=%s ok=%s trend=%s errors=%s",
-            ticker,
-            attempt,
-            result.ok,
-            result.parsed_trend,
-            list(result.errors),
+        log_event(
+            logger,
+            "agent1_validation",
+            step="agent1_validation",
+            status="success" if result.ok else "failed",
+            duration_ms=invoke_ms,
+            metrics={
+                "attempt": attempt,
+                "chars": len(text or ""),
+                "ok": result.ok,
+            },
+            data={
+                "trend": result.parsed_trend,
+                "errors": list(result.errors),
+            },
         )
         if result.ok:
             break
 
     repaired = False
     if not result.ok:
-        logger.warning(
-            "[agent1.harness] repair ticker=%s after_attempts=%s",
-            ticker,
-            max_attempts,
+        log_event(
+            logger,
+            "agent1_repair",
+            level=logging.WARNING,
+            step="agent1_repair",
+            status="repair",
+            metrics={"after_attempts": max_attempts},
         )
         text = repair_performance_analysis(text, facts, ticker)
         result = validate_performance_analysis(text, facts)
         repaired = True
         if not result.ok:
-            logger.warning("[agent1.harness] deterministic_fallback ticker=%s", ticker)
+            log_event(
+                logger,
+                "agent1_deterministic_fallback",
+                level=logging.WARNING,
+                step="agent1_fallback",
+                status="fallback",
+            )
             text = deterministic_performance_analysis(facts, ticker)
             result = validate_performance_analysis(text, facts)
 
-    logger.info(
-        "[agent1.harness] end ticker=%s trend=%s ok=%s repaired=%s",
-        ticker,
-        facts.expected_trend,
-        result.ok,
-        repaired,
+    total_ms = (time.perf_counter() - harness_started) * 1000
+    log_event(
+        logger,
+        "agent1_harness_end",
+        step="agent1_end",
+        status="success" if result.ok else "failed",
+        duration_ms=total_ms,
+        metrics={
+            "repaired": repaired,
+            "chars": len(text or ""),
+            "attempts": len(attempts),
+        },
+        data={"trend": facts.expected_trend, "guardrail_ok": result.ok},
     )
 
     return {
@@ -337,6 +458,7 @@ def run_performance_harness(
         "performance_guardrail_errors": list(result.errors),
         "performance_repaired": repaired,
         "performance_attempts": attempts,
+        "performance_duration_ms": round(total_ms, 2),
         "forecast_facts": {
             "expected_trend": facts.expected_trend,
             "low": facts.low,
@@ -344,3 +466,274 @@ def run_performance_harness(
             "n_prices": len(facts.prices),
         },
     }
+
+
+CHIP_KEYS = ("trend", "news", "confidence", "projected_move")
+
+_CHIP_SECTION_RE = re.compile(
+    r"(?is)^\s*(trend|news|confidence|projected\s*move)\s*:\s*(.+?)(?=^\s*(?:trend|news|confidence|projected\s*move)\s*:|\Z)",
+    re.MULTILINE,
+)
+
+
+def projected_move_pct(forecast: dict[str, Any] | None) -> float | None:
+    """Signed % from last close to the final forecast session."""
+    data = forecast or {}
+    last_close = data.get("last_close")
+    preds = data.get("predictions") or []
+    if last_close is None or not preds:
+        return None
+    try:
+        terminal = float(preds[-1].get("value"))
+        base = float(last_close)
+        if base == 0:
+            return None
+        return ((terminal / base) - 1.0) * 100.0
+    except (TypeError, ValueError, AttributeError, ZeroDivisionError):
+        return None
+
+
+def format_projected_move(pct: float | None) -> str:
+    if pct is None:
+        return "—"
+    return f"{pct:+.2f}%"
+
+
+def deterministic_chip_explanations(
+    *,
+    ticker: str,
+    trend: str | None,
+    news_sentiment: str | None,
+    confidence: str | None,
+    projected_move: str,
+    horizon: int | None = None,
+) -> dict[str, str]:
+    """Plain-language fallbacks when the chip LLM step is skipped or fails."""
+    t = (trend or "SIDEWAYS").upper()
+    n = (news_sentiment or "MIXED").upper()
+    c = (confidence or "Medium").strip() or "Medium"
+    sessions = horizon or 5
+    sym = (ticker or "this ticker").upper()
+
+    if t == "BULLISH":
+        trend_text = (
+            f"Trend is BULLISH for {sym}: the near-term forecast path ends above the "
+            f"last close, so the Performance Analyst labeled direction upward on this "
+            f"short horizon. That is a path reading from the model sessions, not a "
+            f"buy recommendation."
+        )
+    elif t == "BEARISH":
+        trend_text = (
+            f"Trend is BEARISH for {sym}: the near-term forecast path ends below the "
+            f"last close, so the Performance Analyst labeled direction downward on this "
+            f"short horizon. That is a path reading from the model sessions, not a "
+            f"sell recommendation."
+        )
+    else:
+        trend_text = (
+            f"Trend is SIDEWAYS for {sym}: the forecast path stays close to the last "
+            f"close over the short horizon, so the Performance Analyst did not call a "
+            f"clear up or down move. Flat or choppy paths land here."
+        )
+
+    if n == "POSITIVE":
+        news_text = (
+            f"News is POSITIVE for {sym}: the Market Expert’s briefing leaned "
+            f"constructive across the headlines it reviewed. Headline tone can change "
+            f"quickly and does not override the forecast path."
+        )
+    elif n == "NEGATIVE":
+        news_text = (
+            f"News is NEGATIVE for {sym}: the Market Expert’s briefing leaned "
+            f"cautious or adverse across the headlines it reviewed. Headline tone can "
+            f"change quickly and does not override the forecast path."
+        )
+    else:
+        news_text = (
+            f"News is MIXED for {sym}: coverage pulled in more than one direction, or "
+            f"there was not a clear single tone. The Market Expert treated sentiment as "
+            f"balanced rather than strongly positive or negative."
+        )
+
+    if c.lower() == "low":
+        conf_text = (
+            f"Confidence is Low for this run because the path used a simpler fallback "
+            f"or needed extra checking before the note was shown. Treat the summary "
+            f"chips as a lighter signal and read the agent notes for caveats."
+        )
+    elif c.lower() == "high":
+        conf_text = (
+            f"Confidence is High for this run: the forecast path and Performance note "
+            f"aligned without heavy repair. It still reflects a short research window, "
+            f"not certainty about future prices."
+        )
+    else:
+        conf_text = (
+            f"Confidence is Medium for this run: a normal research-desk reading of the "
+            f"forecast path with usual short-horizon uncertainty. Use it as context "
+            f"alongside Trend and the agent notes, not as a guarantee."
+        )
+
+    move_text = (
+        f"Projected move is {projected_move} for {sym}: the change from the last "
+        f"close to the final forecast session across about {sessions} sessions. "
+        f"It summarizes how far the path stretches, not a promised return."
+    )
+
+    return {
+        "trend": trend_text,
+        "news": news_text,
+        "confidence": conf_text,
+        "projected_move": move_text,
+    }
+
+
+def parse_chip_explanations(text: str) -> dict[str, str]:
+    """Parse Trend:/News:/Confidence:/Projected move: sections from model output."""
+    out: dict[str, str] = {}
+    for match in _CHIP_SECTION_RE.finditer(text or ""):
+        key = re.sub(r"\s+", "_", match.group(1).strip().lower())
+        if key == "projected_move" or key in CHIP_KEYS:
+            body = re.sub(r"\s+", " ", (match.group(2) or "").strip())
+            if body:
+                out[key if key in CHIP_KEYS else "projected_move"] = body
+    return {k: out[k] for k in CHIP_KEYS if k in out}
+
+
+def build_chip_explanation_prompt(
+    *,
+    ticker: str,
+    trend: str,
+    news_sentiment: str,
+    confidence: str,
+    projected_move: str,
+    horizon: int,
+    performance_analysis: str,
+    news_summary: str,
+) -> str:
+    perf = (performance_analysis or "").strip()
+    if len(perf) > 1200:
+        perf = perf[:1200] + "…"
+    news = (news_summary or "").strip()
+    if len(news) > 900:
+        news = news[:900] + "…"
+    return f"""You are the Performance Analyst writing hover blurbs for the four summary chips on a research desk for {ticker}.
+
+LOCKED LABELS (do not change them):
+- Trend: {trend}
+- News: {news_sentiment}
+- Confidence: {confidence}
+- Projected move: {projected_move} (about {horizon} sessions)
+
+PERFORMANCE NOTE (ground Trend / Confidence / Projected move here):
+{perf or "(none)"}
+
+NEWS BRIEFING (ground News here; do not invent headlines):
+{news or "(none)"}
+
+Write EXACTLY four sections with these headers:
+
+Trend:
+<2–4 sentences explaining why this run’s Trend is {trend} from the forecast path. Do not explain the opposite label.>
+
+News:
+<2–4 sentences explaining why News is {news_sentiment} from the briefing. Do not invent articles.>
+
+Confidence:
+<2–3 sentences on what Confidence {confidence} means for this run’s path quality.>
+
+Projected move:
+<2–3 sentences on what {projected_move} means (last close → final forecast session).>
+
+Rules:
+- Product language only — no model names, vendors, caches, or internals.
+- Research support only — no buy/sell advice.
+- Keep each section concise; say only what helps the reader understand the chip.
+- Do not add extra sections or markdown bold.
+"""
+
+
+def explain_summary_chips(
+    *,
+    ticker: str,
+    trend: str | None,
+    news_sentiment: str | None,
+    confidence: str | None,
+    forecast: dict[str, Any] | None,
+    performance_analysis: str | None = None,
+    news_summary: str | None = None,
+    llm: Any = None,
+    invoke: Callable[..., Any] | None = None,
+) -> dict[str, str]:
+    """One Performance-owned LLM pass for the four summary-chip blurbs.
+
+    Fail-soft: always returns all four keys (deterministic fallback if needed).
+    """
+    set_ticker(ticker)
+    t = (trend or "SIDEWAYS").upper()
+    n = (news_sentiment or "MIXED").upper()
+    c = (confidence or "Medium").strip() or "Medium"
+    data = forecast or {}
+    horizon = int(data.get("horizon") or len(data.get("predictions") or []) or 5)
+    pct = projected_move_pct(data)
+    move = format_projected_move(pct)
+    fallback = deterministic_chip_explanations(
+        ticker=ticker,
+        trend=t,
+        news_sentiment=n,
+        confidence=c,
+        projected_move=move,
+        horizon=horizon,
+    )
+
+    if llm is None and invoke is None:
+        return fallback
+
+    call = invoke or (lambda messages: llm.invoke(messages))
+    prompt = build_chip_explanation_prompt(
+        ticker=ticker,
+        trend=t,
+        news_sentiment=n,
+        confidence=c,
+        projected_move=move,
+        horizon=horizon,
+        performance_analysis=performance_analysis or "",
+        news_summary=news_summary or "",
+    )
+    started = time.perf_counter()
+    try:
+        response = call(
+            [
+                SystemMessage(
+                    content=(
+                        "You write short chip explanations for an equity research desk. "
+                        "Stay grounded in the provided labels and notes."
+                    )
+                ),
+                HumanMessage(content=prompt),
+            ]
+        )
+        text = message_text(response)
+        parsed = parse_chip_explanations(text)
+        merged = {**fallback, **parsed}
+        log_event(
+            logger,
+            "agent1_chip_explain",
+            step="agent1_chips",
+            status="ok",
+            duration_ms=(time.perf_counter() - started) * 1000,
+            metrics={"parsed": len(parsed), "chars": len(text or "")},
+            data={"trend": t, "news": n, "confidence": c},
+        )
+        return {k: merged[k] for k in CHIP_KEYS}
+    except Exception as exc:  # noqa: BLE001 — never block analyze
+        log_event(
+            logger,
+            "agent1_chip_explain",
+            level=logging.WARNING,
+            step="agent1_chips",
+            status="fallback",
+            duration_ms=(time.perf_counter() - started) * 1000,
+            data={"error": str(exc)[:200]},
+        )
+        return fallback

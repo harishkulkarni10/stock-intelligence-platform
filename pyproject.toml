@@ -37,6 +37,8 @@ agents = [
   "langchain>=0.3",
   "langchain-community>=0.3",
   "langchain-ollama>=0.2",
+  "langchain-google-genai>=2.0",
+  "google-genai>=1.0",
   "langgraph>=0.2",
   "qdrant-client>=1.11",
 ]

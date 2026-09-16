@@ -13,6 +13,8 @@ class AgentState(MessagesState, total=False):
     forecast_text: str
     news: dict[str, Any]
     news_raw: str
+    financials: dict[str, Any]
+    financials_raw: str
     performance_analysis: str
     performance_trend: str
     performance_guardrail_ok: bool
@@ -21,6 +23,10 @@ class AgentState(MessagesState, total=False):
     news_sentiment: str
     news_guardrail_ok: bool
     news_repaired: bool
+    financial_analysis: str
+    financial_health: str
+    financial_guardrail_ok: bool
+    financial_repaired: bool
     draft_report: str
     final_report: str
     recommendation: str
@@ -43,10 +49,18 @@ class AnalyzeResult(TypedDict, total=False):
     news_guardrail_ok: bool
     news_repaired: bool
     news: dict[str, Any]
+    financial_analysis: str
+    financial_health: str
+    financial_guardrail_ok: bool
+    financial_repaired: bool
+    financials: dict[str, Any]
+    company: dict[str, Any]
     draft_report: str
     predictions: dict[str, Any]
+    metric_explanations: dict[str, str]
     cached: bool
     detail: str
+    trace_id: str
 
 
 def extract_stance_and_confidence(text: str) -> tuple[str, str]:

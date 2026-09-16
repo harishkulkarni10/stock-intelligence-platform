@@ -20,7 +20,8 @@ class ReportCache:
     def _key(self, ticker: str) -> str:
         return f"{self.prefix}:{ticker.upper()}"
 
-    def get(self, ticker: str) -> dict[str, Any] | None:
+    def read(self, ticker: str) -> dict[str, Any] | None:
+        """Return ``{result, cached_at_ts, ttl_seconds, age_seconds}`` or None."""
         client = app_state.get_redis()
         if client is None:
             return None
@@ -32,12 +33,25 @@ class ReportCache:
                 raw = raw.decode()
             payload = json.loads(raw)
             created = int(payload.get("cached_at_ts", 0))
-            if created and time.time() - created > self.ttl_seconds:
+            age = int(time.time() - created) if created else 0
+            if created and age > self.ttl_seconds:
                 client.delete(self._key(ticker))
                 return None
-            return payload.get("result")
+            result = payload.get("result")
+            if not isinstance(result, dict):
+                return None
+            return {
+                "result": result,
+                "cached_at_ts": created or None,
+                "ttl_seconds": self.ttl_seconds,
+                "age_seconds": max(0, age),
+            }
         except Exception:
             return None
+
+    def get(self, ticker: str) -> dict[str, Any] | None:
+        entry = self.read(ticker)
+        return None if entry is None else entry.get("result")
 
     def set(self, ticker: str, result: dict[str, Any]) -> None:
         client = app_state.get_redis()
@@ -46,6 +60,15 @@ class ReportCache:
         try:
             envelope = {"cached_at_ts": int(time.time()), "result": result}
             client.setex(self._key(ticker), self.ttl_seconds, json.dumps(envelope, default=str))
+        except Exception:
+            return
+
+    def delete(self, ticker: str) -> None:
+        client = app_state.get_redis()
+        if client is None:
+            return
+        try:
+            client.delete(self._key(ticker))
         except Exception:
             return
 

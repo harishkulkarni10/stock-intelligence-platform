@@ -13,6 +13,16 @@ from src.agents.nodes import market_expert_node
 from src.agents.tools import format_news_for_prompt
 from src.monitoring.agent_eval import evaluate_news_fixtures
 
+_LONG_ANALYSIS = (
+    "Coverage around NVIDIA is constructive and internally consistent. The earnings "
+    "beat tied to GPU demand points to customers still expanding AI infrastructure, "
+    "and a careful reader should still open the primary article to confirm how broad "
+    "the beat was. That does not remove cyclical or competitive risk, but for a "
+    "short-horizon news read the tape is supportive rather than conflicted. Taken "
+    "together, the available headline justifies a POSITIVE sentiment label while "
+    "leaving room for macro or peer surprises that are not spelled out in this sample."
+)
+
 
 def _ok_news() -> dict:
     return {
@@ -45,8 +55,12 @@ def test_grounded_positive_summary_passes():
     facts = build_news_facts(news)
     text = (
         "Sentiment: POSITIVE\n"
-        "Drivers: - NVIDIA beats earnings estimates on strong GPU demand\n"
-        "Caveat: Single-source snapshot."
+        "Headlines:\n"
+        "- NVIDIA beats earnings estimates on strong GPU demand\n"
+        f"Analysis:\n{_LONG_ANALYSIS}\n"
+        "Implications:\n"
+        "- Demand tone currently leans supportive for NVIDIA.\n"
+        "Caveats: Single-source snapshot."
     )
     assert validate_news_analysis(text, facts).ok is True
 
@@ -56,11 +70,24 @@ def test_invented_headline_fails():
     facts = build_news_facts(news)
     text = (
         "Sentiment: POSITIVE\n"
-        "Drivers: - Apple acquires a secret quantum chip startup in Zurich for forty billion dollars overnight\n"
-        "Caveat: none"
+        "Headlines:\n"
+        "- Apple acquires a secret quantum chip startup in Zurich for forty billion dollars overnight\n"
+        f"Analysis:\n{_LONG_ANALYSIS}\n"
+        "Caveats: none"
     )
     result = validate_news_analysis(text, facts)
     assert result.ok is False
+
+
+def test_short_drivers_only_fails():
+    news = _ok_news()
+    facts = build_news_facts(news)
+    text = (
+        "Sentiment: POSITIVE\n"
+        "Drivers: - NVIDIA beats earnings estimates on strong GPU demand\n"
+        "Caveat: Limited article set."
+    )
+    assert validate_news_analysis(text, facts).ok is False
 
 
 def test_harness_recovers_when_news_missing():
@@ -92,8 +119,12 @@ def test_market_expert_node_uses_harness(monkeypatch):
             return AIMessage(
                 content=(
                     "Sentiment: POSITIVE\n"
-                    "Drivers: - NVIDIA beats earnings estimates on strong GPU demand\n"
-                    "Caveat: Limited article set."
+                    "Headlines:\n"
+                    "- NVIDIA beats earnings estimates on strong GPU demand\n"
+                    f"Analysis:\n{_LONG_ANALYSIS}\n"
+                    "Implications:\n"
+                    "- Demand tone currently leans supportive for NVIDIA.\n"
+                    "Caveats: Limited article set."
                 )
             )
 
@@ -102,6 +133,7 @@ def test_market_expert_node_uses_harness(monkeypatch):
     result = market_expert_node({"ticker": "NVDA"})
     assert result["news_sentiment"] == "POSITIVE"
     assert result["news_guardrail_ok"] is True
+    assert "Analysis:" in result["news_summary"]
 
 
 def test_news_eval_fixtures_pass():

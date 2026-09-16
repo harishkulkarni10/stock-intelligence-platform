@@ -51,7 +51,8 @@ def test_get_forecast_prefers_child(monkeypatch, tmp_path):
     assert result["model_source"] == "child"
     assert result["predictions"][0]["value"] == 101.0
     text = tools.format_forecast_for_prompt(result)
-    assert "child-1" in text and "101.0000" in text
+    assert "101.0000" in text
+    assert "NVDA" in text.upper() or "nvda" in text.lower()
 
 
 def test_get_news_falls_back_to_yahoo(monkeypatch):
@@ -114,9 +115,10 @@ def test_get_news_drops_irrelevant_yahoo_blurbs(monkeypatch):
 
     result = tools.get_news("NVDA", limit=5)
 
+    ticker_articles = [a for a in result["articles"] if a.get("scope") != "peer"]
     assert result["status"] == "ok"
-    assert len(result["articles"]) == 1
-    assert "NVIDIA" in result["articles"][0]["headline"]
+    assert len(ticker_articles) == 1
+    assert "NVIDIA" in ticker_articles[0]["headline"]
     assert result["filtered_out"] == 2
 
 
@@ -150,3 +152,59 @@ def test_article_mentions_ticker_aliases():
     assert not tools.article_mentions_ticker(
         {"headline": "Walmart dividend kings", "summary": "Target up"}, "NVDA"
     )
+
+
+def test_get_financials_normalizes_info(monkeypatch):
+    from src.market import financials as fin
+
+    class FakeTicker:
+        info = {
+            "shortName": "NVIDIA Corporation",
+            "sector": "Technology",
+            "industry": "Semiconductors",
+            "currency": "USD",
+            "totalRevenue": 130_000_000_000,
+            "revenueGrowth": 0.55,
+            "grossMargins": 0.75,
+            "operatingMargins": 0.55,
+            "profitMargins": 0.5,
+            "operatingCashflow": 50_000_000_000,
+            "freeCashflow": 40_000_000_000,
+            "totalCash": 30_000_000_000,
+            "totalDebt": 10_000_000_000,
+            "debtToEquity": 25.0,
+            "currentRatio": 3.5,
+            "returnOnEquity": 0.9,
+            "returnOnAssets": 0.4,
+            "marketCap": 3_000_000_000_000,
+            "trailingPE": 45.0,
+            "priceToSalesTrailing12Months": 25.0,
+            "priceToBook": 40.0,
+            "enterpriseToEbitda": 35.0,
+        }
+        income_stmt = None
+
+    monkeypatch.setattr(fin.yf, "Ticker", lambda symbol: FakeTicker())
+
+    result = tools.get_financials("nvda")
+
+    assert result["status"] == "ok"
+    assert result["coverage"] == "full"
+    assert result["allowed_health"] == "STRONG"
+    assert result["metrics"]["revenue"] == 130_000_000_000
+    assert "130.00B" in tools.format_financials_for_prompt(result)
+
+
+def test_get_financials_missing_fields(monkeypatch):
+    from src.market import financials as fin
+
+    class FakeTicker:
+        info = {"shortName": "Empty Co"}
+        income_stmt = None
+
+    monkeypatch.setattr(fin.yf, "Ticker", lambda symbol: FakeTicker())
+
+    result = tools.get_financials("ZZZZ")
+
+    assert result["coverage"] == "missing"
+    assert result["allowed_health"] == "UNAVAILABLE"

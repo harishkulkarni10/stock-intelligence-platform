@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import os
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,8 @@ from backend.schemas import (
     AnalyzeRequest,
     AnalyzeResponse,
     HealthResponse,
+    HelpChatRequest,
+    HelpChatResponse,
     PredictionPoint,
     PredictionResult,
     PredictRequest,
@@ -20,6 +23,7 @@ from backend.schemas import (
     TaskStatus,
     TrainChildRequest,
 )
+from logger.context import bind_context, get_trace_id
 
 router = APIRouter()
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,8 +35,8 @@ def api_info() -> dict:
     return {
         "project": "Stock Intelligence Platform",
         "version": "0.1.0",
-        "status": "agent1_agent2",
-        "analyze_mode": "performance_news",
+        "status": "agent1_agent2_agent3",
+        "analyze_mode": "performance_news_financial",
         "endpoints": {
             "health": "GET /health",
             "ready": "GET /ready",
@@ -42,6 +46,7 @@ def api_info() -> dict:
             "predict_parent": "POST /predict-parent",
             "predict_child": "POST /predict-child",
             "analyze": "POST /analyze",
+            "help_chat": "POST /help-chat",
             "status": "GET /status/{task_id}",
             "docs": "GET /docs",
         },
@@ -170,16 +175,44 @@ def task_status(task_id: str) -> TaskStatus:
     return TaskStatus.model_validate(task)
 
 
+@router.post("/help-chat", response_model=HelpChatResponse)
+async def help_chat(request: HelpChatRequest) -> HelpChatResponse:
+    _limit("help-chat", "global")
+
+    def run() -> dict[str, Any]:
+        from src.agents.help_chat import answer_help_question
+
+        history = [item.model_dump() for item in request.history[-6:]]
+        return answer_help_question(request.message, history)
+
+    ctx = contextvars.copy_context()
+    result = await asyncio.get_running_loop().run_in_executor(
+        state.executor, lambda: ctx.run(run)
+    )
+    return HelpChatResponse.model_validate(result)
+
+
 @router.post("/analyze", response_model=AnalyzeResponse)
 async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
     _limit("analyze", request.ticker)
+    bind_context(ticker=request.ticker.upper())
 
     def run() -> dict[str, Any]:
         from src.agents.graph import analyze_stock
 
-        return analyze_stock(request.ticker, request.thread_id)
+        return analyze_stock(
+            request.ticker,
+            request.thread_id,
+            force_refresh=request.force_refresh,
+        )
 
-    result = await asyncio.get_running_loop().run_in_executor(state.executor, run)
+    # Propagate trace_id / ticker into the worker thread.
+    ctx = contextvars.copy_context()
+    result = await asyncio.get_running_loop().run_in_executor(
+        state.executor, lambda: ctx.run(run)
+    )
     if result.get("status") not in {"ok", "missing_model", "error", "training"}:
         result = {**result, "status": result.get("status") or "error"}
+    if get_trace_id():
+        result = {**result, "trace_id": get_trace_id()}
     return AnalyzeResponse.model_validate(result)

@@ -12,6 +12,7 @@ import torch
 from src.config import Config
 from src.data.ingestion import fetch_ohlcv, normalize_ticker
 from src.inference import decode_forecast
+from src.market.equity import frame_to_history
 from src.model.saving import load_artifact
 from src.pipelines.training_pipeline import child_artifact_dir, parent_artifact_dir
 
@@ -35,7 +36,7 @@ def _resolve_dir(model_type: str, ticker: str | None = None) -> Path:
 
 def _child_model_exists(ticker: str) -> bool:
     return (child_artifact_dir(ticker, _cfg()) / "model.pt").exists()
-    
+
 
 def _load_train_summary(ticker: str) -> dict[str, Any] | None:
     path = child_artifact_dir(ticker, _cfg()) / "train_summary.json"
@@ -126,17 +127,7 @@ def _predict_artifact(path: Path, ticker: str, horizon: int | None = None) -> di
     series = decode_forecast(
         raw, last_close, last_date, transform=meta.get("transform", "simple")
     )
-    history = [
-        {
-            "date": pd.Timestamp(row_date).strftime("%Y-%m-%d"),
-            "close": float(close),
-        }
-        for row_date, close in zip(
-            frame.tail(30)["date"].tolist(),
-            frame.tail(30)["Close"].tolist(),
-            strict=True,
-        )
-    ]
+    history = frame_to_history(frame)
     predictions = [
         {
             "step": index,
@@ -174,17 +165,7 @@ def predict_persistence(ticker: str, horizon: int | None = None) -> dict[str, An
         last_date,
         transform="simple",
     )
-    history = [
-        {
-            "date": pd.Timestamp(row_date).strftime("%Y-%m-%d"),
-            "close": float(close),
-        }
-        for row_date, close in zip(
-            frame.tail(30)["date"].tolist(),
-            frame.tail(30)["Close"].tolist(),
-            strict=True,
-        )
-    ]
+    history = frame_to_history(frame)
     predictions = [
         {
             "step": index,

@@ -7,8 +7,13 @@ from langchain_core.messages import AIMessage
 from src.agents.nodes import performance_analyst_node
 from src.agents.performance_guardrails import (
     build_forecast_facts,
+    deterministic_chip_explanations,
     expected_trend_from_prices,
+    explain_summary_chips,
+    format_projected_move,
+    parse_chip_explanations,
     parse_trend_label,
+    projected_move_pct,
     run_performance_harness,
     validate_performance_analysis,
 )
@@ -88,6 +93,7 @@ def test_harness_repairs_bad_llm(monkeypatch):
     assert out["performance_trend"] == "SIDEWAYS"
     assert out["performance_guardrail_ok"] is True
     assert out["performance_analysis"].startswith("Trend: SIDEWAYS")
+    assert "Analysis:" in out["performance_analysis"]
     assert "999" not in out["performance_analysis"]
 
 
@@ -100,7 +106,22 @@ def test_performance_analyst_node_uses_harness(monkeypatch):
                 content=(
                     "Trend: SIDEWAYS\n"
                     "Range: 224.4100 – 224.4100\n"
-                    "Caution: Persistence baseline; limited signal."
+                    "Analysis:\n"
+                    "The printed sessions for NVDA sit flat at 224.4100 across the horizon, "
+                    "so the path does not extend away from the last close in a meaningful way. "
+                    "That geometry is classic consolidation: the model is restating the current "
+                    "level rather than projecting a decisive climb or slide. A careful reader "
+                    "should treat the SIDEWAYS label as earned by the near-zero move and give "
+                    "the note less directional conviction than a staircase of higher or lower "
+                    "closes. Short-horizon flat paths are still useful for framing the chart — "
+                    "they say the system sees limited signal — but they are not a claim that "
+                    "the live market will stay frozen. Use the span and session list beside the "
+                    "chart, and remember news shocks can invalidate a quiet baseline quickly.\n"
+                    "Key points:\n"
+                    "- Flat sessions justify SIDEWAYS rather than forced bullish or bearish labels.\n"
+                    "- The range collapses to a single printed level, underscoring low path volatility.\n"
+                    "- Treat this as a low-conviction research framing, not a trade call.\n"
+                    "Caveats: Persistence-like flats miss regime shifts; research support only."
                 )
             )
 
@@ -116,8 +137,82 @@ def test_performance_analyst_node_uses_harness(monkeypatch):
     assert result["performance_trend"] == "SIDEWAYS"
     assert result["performance_guardrail_ok"] is True
     assert "SIDEWAYS" in result["performance_analysis"]
+    assert "Analysis:" in result["performance_analysis"]
 
 
 def test_performance_eval_fixtures_pass():
     report = evaluate_performance_fixtures()
     assert report["ok"] is True, report
+
+
+def test_projected_move_pct_and_format():
+    forecast = {
+        "last_close": 100.0,
+        "predictions": [{"value": 101.5}],
+    }
+    assert abs(projected_move_pct(forecast) - 1.5) < 1e-9
+    assert format_projected_move(1.5) == "+1.50%"
+    assert format_projected_move(None) == "—"
+
+
+def test_parse_chip_explanations():
+    text = (
+        "Trend:\nBullish because the path rises.\n\n"
+        "News:\nMixed headlines.\n\n"
+        "Confidence:\nMedium quality path.\n\n"
+        "Projected move:\nAbout +1.50% over five sessions.\n"
+    )
+    parsed = parse_chip_explanations(text)
+    assert "Bullish" in parsed["trend"]
+    assert "Mixed" in parsed["news"]
+    assert "Medium" in parsed["confidence"]
+    assert "+1.50%" in parsed["projected_move"]
+
+
+def test_explain_summary_chips_uses_llm_and_fallback():
+    class Scripted:
+        def invoke(self, messages):
+            return AIMessage(
+                content=(
+                    "Trend:\nPath ends higher so Trend is BULLISH for NVDA.\n"
+                    "News:\nBriefing tone is MIXED across drivers.\n"
+                    "Confidence:\nLow because this run used a simpler path.\n"
+                    "Projected move:\nMove is +0.00% from last close to the final session.\n"
+                )
+            )
+
+    out = explain_summary_chips(
+        ticker="NVDA",
+        trend="BULLISH",
+        news_sentiment="MIXED",
+        confidence="Low",
+        forecast=_flat_forecast(),
+        performance_analysis="Trend: BULLISH\nAnalysis:\nUp path.",
+        news_summary="Sentiment: MIXED\nAnalysis:\nMixed.",
+        llm=Scripted(),
+    )
+    assert "BULLISH" in out["trend"]
+    assert "MIXED" in out["news"]
+    assert out["confidence"]
+    assert out["projected_move"]
+
+    fallback = explain_summary_chips(
+        ticker="NVDA",
+        trend="SIDEWAYS",
+        news_sentiment="MIXED",
+        confidence="Low",
+        forecast=_flat_forecast(),
+    )
+    assert set(fallback) == {"trend", "news", "confidence", "projected_move"}
+    assert "SIDEWAYS" in fallback["trend"]
+
+    det = deterministic_chip_explanations(
+        ticker="CCL",
+        trend="BULLISH",
+        news_sentiment="MIXED",
+        confidence="Medium",
+        projected_move="+1.48%",
+        horizon=5,
+    )
+    assert "BULLISH" in det["trend"]
+    assert "+1.48%" in det["projected_move"]
