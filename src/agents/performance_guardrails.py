@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import math
-import re
+import re   
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -468,10 +468,10 @@ def run_performance_harness(
     }
 
 
-CHIP_KEYS = ("trend", "news", "confidence", "projected_move")
+CHIP_KEYS = ("trend", "news", "confidence", "projected_move", "risk")
 
 _CHIP_SECTION_RE = re.compile(
-    r"(?is)^\s*(trend|news|confidence|projected\s*move)\s*:\s*(.+?)(?=^\s*(?:trend|news|confidence|projected\s*move)\s*:|\Z)",
+    r"(?is)^\s*(trend|news|confidence|projected\s*move|risk)\s*:\s*(.+?)(?=^\s*(?:trend|news|confidence|projected\s*move|risk)\s*:|\Z)",
     re.MULTILINE,
 )
 
@@ -507,11 +507,13 @@ def deterministic_chip_explanations(
     confidence: str | None,
     projected_move: str,
     horizon: int | None = None,
+    risk_level: str | None = None,
 ) -> dict[str, str]:
     """Plain-language fallbacks when the chip LLM step is skipped or fails."""
     t = (trend or "SIDEWAYS").upper()
     n = (news_sentiment or "MIXED").upper()
     c = (confidence or "Medium").strip() or "Medium"
+    r = (risk_level or "MODERATE").upper()
     sessions = horizon or 5
     sym = (ticker or "this ticker").upper()
 
@@ -580,11 +582,31 @@ def deterministic_chip_explanations(
         f"It summarizes how far the path stretches, not a promised return."
     )
 
+    if r == "ELEVATED":
+        risk_text = (
+            f"Risk is ELEVATED for {sym}: coded volatility, drawdown, news, financial, "
+            f"or forecast-trust flags stacked higher on this run. Read the Risk analyst "
+            f"note for which drivers mattered — it is not a trade instruction."
+        )
+    elif r == "CONTAINED":
+        risk_text = (
+            f"Risk is CONTAINED for {sym}: coded path volatility and context flags stayed "
+            f"comparatively calm on this short window. Contained still means uncertainty "
+            f"remains; it is not a guarantee of quiet markets."
+        )
+    else:
+        risk_text = (
+            f"Risk is MODERATE for {sym}: a normal short-horizon mix of path volatility "
+            f"and agent context without an extreme stack of warning flags. Use it with "
+            f"Trend, News, and Financial — not alone."
+        )
+
     return {
         "trend": trend_text,
         "news": news_text,
         "confidence": conf_text,
         "projected_move": move_text,
+        "risk": risk_text,
     }
 
 
@@ -610,6 +632,8 @@ def build_chip_explanation_prompt(
     horizon: int,
     performance_analysis: str,
     news_summary: str,
+    risk_level: str = "MODERATE",
+    risk_analysis: str = "",
 ) -> str:
     perf = (performance_analysis or "").strip()
     if len(perf) > 1200:
@@ -617,13 +641,17 @@ def build_chip_explanation_prompt(
     news = (news_summary or "").strip()
     if len(news) > 900:
         news = news[:900] + "…"
-    return f"""You are the Performance Analyst writing hover blurbs for the four summary chips on a research desk for {ticker}.
+    risk_note = (risk_analysis or "").strip()
+    if len(risk_note) > 900:
+        risk_note = risk_note[:900] + "…"
+    return f"""You are the Performance Analyst writing hover blurbs for the summary chips on a research desk for {ticker}.
 
 LOCKED LABELS (do not change them):
 - Trend: {trend}
 - News: {news_sentiment}
 - Confidence: {confidence}
 - Projected move: {projected_move} (about {horizon} sessions)
+- Risk: {risk_level}
 
 PERFORMANCE NOTE (ground Trend / Confidence / Projected move here):
 {perf or "(none)"}
@@ -631,7 +659,10 @@ PERFORMANCE NOTE (ground Trend / Confidence / Projected move here):
 NEWS BRIEFING (ground News here; do not invent headlines):
 {news or "(none)"}
 
-Write EXACTLY four sections with these headers:
+RISK NOTE (ground Risk here):
+{risk_note or "(none)"}
+
+Write EXACTLY five sections with these headers:
 
 Trend:
 <2–4 sentences explaining why this run’s Trend is {trend} from the forecast path. Do not explain the opposite label.>
@@ -644,6 +675,9 @@ Confidence:
 
 Projected move:
 <2–3 sentences on what {projected_move} means (last close → final forecast session).>
+
+Risk:
+<2–3 sentences on what Risk {risk_level} means for this run’s downside / uncertainty. No trade advice.>
 
 Rules:
 - Product language only — no model names, vendors, caches, or internals.
@@ -662,17 +696,20 @@ def explain_summary_chips(
     forecast: dict[str, Any] | None,
     performance_analysis: str | None = None,
     news_summary: str | None = None,
+    risk_level: str | None = None,
+    risk_analysis: str | None = None,
     llm: Any = None,
     invoke: Callable[..., Any] | None = None,
 ) -> dict[str, str]:
-    """One Performance-owned LLM pass for the four summary-chip blurbs.
+    """One Performance-owned LLM pass for the summary-chip blurbs.
 
-    Fail-soft: always returns all four keys (deterministic fallback if needed).
+    Fail-soft: always returns all chip keys (deterministic fallback if needed).
     """
     set_ticker(ticker)
     t = (trend or "SIDEWAYS").upper()
     n = (news_sentiment or "MIXED").upper()
     c = (confidence or "Medium").strip() or "Medium"
+    r = (risk_level or "MODERATE").upper()
     data = forecast or {}
     horizon = int(data.get("horizon") or len(data.get("predictions") or []) or 5)
     pct = projected_move_pct(data)
@@ -684,6 +721,7 @@ def explain_summary_chips(
         confidence=c,
         projected_move=move,
         horizon=horizon,
+        risk_level=r,
     )
 
     if llm is None and invoke is None:
@@ -699,6 +737,8 @@ def explain_summary_chips(
         horizon=horizon,
         performance_analysis=performance_analysis or "",
         news_summary=news_summary or "",
+        risk_level=r,
+        risk_analysis=risk_analysis or "",
     )
     started = time.perf_counter()
     try:
@@ -723,7 +763,7 @@ def explain_summary_chips(
             status="ok",
             duration_ms=(time.perf_counter() - started) * 1000,
             metrics={"parsed": len(parsed), "chars": len(text or "")},
-            data={"trend": t, "news": n, "confidence": c},
+            data={"trend": t, "news": n, "confidence": c, "risk": r},
         )
         return {k: merged[k] for k in CHIP_KEYS}
     except Exception as exc:  # noqa: BLE001 — never block analyze

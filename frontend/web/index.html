@@ -10,17 +10,47 @@
       href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/styles.css?v=20260351" />
-    <!-- Local Plotly (same origin) — avoids Chrome CDN/cache issues vs Cursor Simple Browser -->
+    <link rel="stylesheet" href="/styles.css?v=20260355" />
     <script src="/vendor/plotly.min.js?v=2.35.2"></script>
-    <script src="/app.js?v=20260351" defer></script>
+    <script src="/app.js?v=20260355" defer></script>
   </head>
   <body>
-    <header class="topbar">
-      <a href="/" class="brand" id="brandHome" title="Home">
+    <header class="topbar" id="topBar">
+      <button type="button" class="brand" id="brandHome" title="Home">
         <span class="brand-mark" aria-hidden="true"></span>
         <span class="brand-name">Stock Intelligence</span>
-      </a>
+      </button>
+      <nav class="view-tabs" aria-label="Views">
+        <button type="button" class="view-tab active" data-view="home">Home</button>
+        <button type="button" class="view-tab" data-view="lab">Lab</button>
+        <button type="button" class="view-tab" data-view="results" id="navResults" disabled>Report</button>
+      </nav>
+      <form id="analyzeForm" class="hunt" autocomplete="off">
+        <label class="sr-only" for="tickerInput">Ticker</label>
+        <span class="hunt-prefix" aria-hidden="true">$</span>
+        <input
+          id="tickerInput"
+          name="ticker"
+          type="search"
+          list="tickerSuggestions"
+          maxlength="12"
+          placeholder="Ticker"
+          required
+        />
+        <datalist id="tickerSuggestions">
+          <option value="AAPL"></option>
+          <option value="MSFT"></option>
+          <option value="NVDA"></option>
+          <option value="TSLA"></option>
+          <option value="GOOGL"></option>
+          <option value="AMD"></option>
+          <option value="META"></option>
+          <option value="AMZN"></option>
+          <option value="ORCL"></option>
+          <option value="AVGO"></option>
+        </datalist>
+        <button id="analyzeBtn" type="submit">Run agents</button>
+      </form>
       <div class="topbar-actions">
         <button
           id="resultsReadyPill"
@@ -52,53 +82,26 @@
       </div>
     </header>
 
-    <main class="page">
-      <form id="analyzeForm" class="search-row" autocomplete="off">
-        <label class="sr-only" for="tickerInput">Ticker</label>
-        <input
-          id="tickerInput"
-          name="ticker"
-          type="search"
-          list="tickerSuggestions"
-          maxlength="12"
-          placeholder="Search ticker (e.g. AAPL)"
-          value=""
-          required
-        />
-        <datalist id="tickerSuggestions">
-          <option value="AAPL"></option>
-          <option value="MSFT"></option>
-          <option value="NVDA"></option>
-          <option value="TSLA"></option>
-          <option value="GOOGL"></option>
-          <option value="AMD"></option>
-          <option value="META"></option>
-          <option value="AMZN"></option>
-          <option value="ORCL"></option>
-          <option value="AVGO"></option>
-        </datalist>
-        <button id="analyzeBtn" type="submit">Run agents</button>
-      </form>
+    <div id="runBanner" class="run-toast hidden" role="status" aria-live="polite"></div>
+    <p id="errorBanner" class="run-toast bad hidden" role="alert"></p>
 
-      <div id="runBanner" class="run-banner hidden" role="status" aria-live="polite"></div>
-      <p id="errorBanner" class="error-banner hidden" role="alert"></p>
+    <section id="loadingPanel" class="loader hidden" aria-live="polite" aria-busy="true">
+      <div class="loader-track" aria-hidden="true"><i></i></div>
+      <div class="loader-row">
+        <strong id="loadingTitle">Running…</strong>
+        <span id="loadingSub">Forecast path + five agents</span>
+      </div>
+      <ol class="loader-steps" id="loadingSteps">
+        <li data-load-step="0">Forecast</li>
+        <li data-load-step="1">Performance analyst</li>
+        <li data-load-step="2">Market expert</li>
+        <li data-load-step="3">Financial analyst</li>
+        <li data-load-step="4">Risk analyst</li>
+        <li data-load-step="5">Research brief</li>
+      </ol>
+    </section>
 
-      <section id="loadingPanel" class="loading-panel hidden" aria-live="polite" aria-busy="true">
-        <div class="loading-head">
-          <div class="spinner" aria-hidden="true"></div>
-          <div class="loading-copy">
-            <strong id="loadingTitle">Analyzing…</strong>
-            <p id="loadingSub">Working through forecast and agents. You can keep exploring this page.</p>
-          </div>
-        </div>
-        <ol class="loading-steps" id="loadingSteps">
-          <li data-load-step="0">Building forecast</li>
-          <li data-load-step="1">Performance analyst</li>
-          <li data-load-step="2">Market expert</li>
-          <li data-load-step="3">Financial analyst</li>
-        </ol>
-      </section>
-
+    <main class="stage">
       <div id="sessionResultsBar" class="session-results-bar hidden">
         <div class="session-results-bar-copy">
           <strong id="sessionResultsLabel">On your desk</strong>
@@ -108,281 +111,283 @@
         <button type="button" class="primary-inline-btn" id="sessionResultsOpen">Open latest</button>
       </div>
 
-      <section id="home" class="home">
-        <div class="home-masthead">
-          <div class="home-masthead-copy">
+      <section id="home" class="page-view">
+        <div class="splash">
+          <div class="splash-copy">
             <p class="home-kicker">Stock Intelligence · research desk</p>
-            <h1>One ticker. A forecast. Three grounded readings.</h1>
+            <h1>Equity research in one packet.</h1>
             <p class="home-lede">
-              Search a symbol to run the same workflow every time: a near-term
-              forecast chart, then three specialists on performance, news, and
-              fundamentals — grounded in the numbers and headlines you can check.
+              Enter a ticker and run agents. Stock Intelligence builds a near-term forecast path,
+              then Performance, Market, Financial, and Risk annotate it. A Research brief stitches
+              those notes into one stance-locked memo — research support only, never a buy or sell call.
             </p>
-            <p class="home-lede secondary">
-              Think of it as a quiet research desk, not a trading terminal. You leave
-              with a chart, a trend call, a news briefing, and a fundamentals health
-              note you can cross-check against the sources and metrics on the page.
-            </p>
-          </div>
-          <aside class="home-masthead-aside" aria-label="What a finished run contains">
-            <div class="home-aside-title">Inside a finished run</div>
-            <ul class="home-aside-list">
-              <li><span class="dot blue"></span>Price history + short-horizon forecast</li>
-              <li><span class="dot green"></span>Performance note on the path</li>
-              <li><span class="dot amber"></span>Market briefing from relevant headlines</li>
-              <li><span class="dot orange"></span>Fundamentals health from live statements</li>
+            <div class="cta-row">
+              <button type="button" class="primary-inline-btn" data-focus-search>Enter ticker</button>
+              <button type="button" class="ghost-btn" data-view="lab">Open Lab</button>
+            </div>
+            <ul class="home-bullets">
+              <li>Solid line = observed closes · dashed = forecast</li>
+              <li>Specialists explain the chart — they don’t invent other prices</li>
+              <li>On your desk keeps finished runs for this visit</li>
             </ul>
-            <p class="home-aside-note">Typical runtime is about one to two minutes.</p>
+          </div>
+          <aside class="splash-visual" aria-label="Sample forecast">
+            <div class="panel home-chart-panel compact">
+              <div class="panel-head chart-intro-head">
+                <div>
+                  <p class="panel-kicker">Sample path · not live market data</p>
+                  <h2 class="panel-title">How the forecast chart reads</h2>
+                </div>
+                <div class="sample-quote-badge">
+                  <span class="sample-sym">DEMO</span>
+                  <span class="sample-chg up">+1.9%</span>
+                </div>
+              </div>
+              <div id="homeDemoChart" class="chart-box chart-box-home"></div>
+              <div class="chart-legend-row">
+                <span><i class="lg solid"></i> Observed</span>
+                <span><i class="lg dash"></i> Forecast</span>
+              </div>
+            </div>
           </aside>
         </div>
 
-        <section class="market-strip-wrap" aria-label="Example tickers">
-          <div class="market-strip-head">
-            <h2>Start with a familiar name</h2>
-            <p>Illustrative quotes — click any symbol to run a full analysis now.</p>
-          </div>
-          <div class="market-strip" id="quickTickers">
-            <button type="button" class="quote-tile" data-ticker="AAPL">
-              <span class="quote-sym">AAPL</span>
-              <span class="quote-name">Apple</span>
-              <span class="quote-move up">Tech · liquid</span>
-            </button>
-            <button type="button" class="quote-tile" data-ticker="MSFT">
-              <span class="quote-sym">MSFT</span>
-              <span class="quote-name">Microsoft</span>
-              <span class="quote-move up">Software · cloud</span>
-            </button>
-            <button type="button" class="quote-tile" data-ticker="NVDA">
-              <span class="quote-sym">NVDA</span>
-              <span class="quote-name">NVIDIA</span>
-              <span class="quote-move up">Semiconductors</span>
-            </button>
-            <button type="button" class="quote-tile" data-ticker="TSLA">
-              <span class="quote-sym">TSLA</span>
-              <span class="quote-name">Tesla</span>
-              <span class="quote-move down">Auto · energy</span>
-            </button>
-            <button type="button" class="quote-tile" data-ticker="GOOGL">
-              <span class="quote-sym">GOOGL</span>
-              <span class="quote-name">Alphabet</span>
-              <span class="quote-move up">Internet · ads</span>
-            </button>
-            <button type="button" class="quote-tile" data-ticker="ORCL">
-              <span class="quote-sym">ORCL</span>
-              <span class="quote-name">Oracle</span>
-              <span class="quote-move flat">Enterprise IT</span>
-            </button>
-          </div>
-        </section>
-
-        <div class="home-workspace">
-          <section class="panel home-chart-panel">
-            <div class="panel-head chart-intro-head">
-              <div>
-                <p class="panel-kicker">Sample path · not live market data</p>
-                <h2 class="panel-title">How the forecast chart reads</h2>
-                <p class="panel-sub">
-                  Solid line = observed closes. Dashed line = projected path for the next
-                  sessions. On a real run you also get range controls, projected move,
-                  and the full history behind the window.
-                </p>
-              </div>
-              <div class="sample-quote-badge">
-                <span class="sample-sym">DEMO</span>
-                <span class="sample-chg up">+1.9%</span>
-              </div>
-            </div>
-            <div id="homeDemoChart" class="chart-box chart-box-home"></div>
-            <div class="chart-legend-row">
-              <span><i class="lg solid"></i> Observed</span>
-              <span><i class="lg dash"></i> Forecast</span>
-              <span class="muted">Drag to pan · scroll to zoom</span>
-            </div>
-          </section>
-
-          <section class="panel home-flow-panel">
-            <div class="panel-head">
-              <div>
-                <p class="panel-kicker">Workflow</p>
-                <h2 class="panel-title">What happens when you run agents</h2>
-              </div>
-            </div>
-            <div class="flow-steps" id="pipeline" role="tablist" aria-label="Run steps">
-              <button type="button" class="flow-step active" data-step="0" role="tab" aria-selected="true">
-                <span class="flow-num">1</span>
-                <span class="flow-label">
-                  <strong>Forecast</strong>
-                  <em>Price path</em>
-                </span>
-              </button>
-              <button type="button" class="flow-step" data-step="1" role="tab" aria-selected="false">
-                <span class="flow-num">2</span>
-                <span class="flow-label">
-                  <strong>Performance</strong>
-                  <em>Reads the path</em>
-                </span>
-              </button>
-              <button type="button" class="flow-step" data-step="2" role="tab" aria-selected="false">
-                <span class="flow-num">3</span>
-                <span class="flow-label">
-                  <strong>Market expert</strong>
-                  <em>News + peers</em>
-                </span>
-              </button>
-              <button type="button" class="flow-step" data-step="3" role="tab" aria-selected="false">
-                <span class="flow-num">4</span>
-                <span class="flow-label">
-                  <strong>Financial</strong>
-                  <em>Statements</em>
-                </span>
-              </button>
-            </div>
-            <div id="pipelineDetail" class="flow-detail"></div>
-          </section>
+        <header class="sec-h">
+          <h2>What a finished report contains</h2>
+          <p>Every successful run opens the same packet structure — know the map before you run.</p>
+        </header>
+        <div class="packet-grid">
+          <article class="packet-card">
+            <span class="pc-n">01</span>
+            <strong>Summary chips</strong>
+            <p>Trend, News, Confidence, Risk, and Projected move — orient fast, then dig into notes.</p>
+          </article>
+          <article class="packet-card">
+            <span class="pc-n">02</span>
+            <strong>Company overview</strong>
+            <p>Issuer name, sector / industry context, and a short company summary when available.</p>
+          </article>
+          <article class="packet-card">
+            <span class="pc-n">03</span>
+            <strong>Price &amp; forecast</strong>
+            <p>History plus a short forward path. Range pills (1M–MAX) and Reset for the chart view.</p>
+          </article>
+          <article class="packet-card">
+            <span class="pc-n">04</span>
+            <strong>Four specialists</strong>
+            <p>Performance, Market, Financial, and Risk notes — each with labels you can verify on-page.</p>
+          </article>
+          <article class="packet-card">
+            <span class="pc-n">05</span>
+            <strong>Research brief</strong>
+            <p>Stitches the four specialist notes into one memo with locked Stance, Confidence, bull/bear cases.</p>
+          </article>
+          <article class="packet-card">
+            <span class="pc-n">06</span>
+            <strong>Sources</strong>
+            <p>Headlines behind the Market expert note. Open links to check claims yourself.</p>
+          </article>
+          <article class="packet-card">
+            <span class="pc-n">07</span>
+            <strong>On your desk</strong>
+            <p>Visit-only tray of finished tickers. Compare while another run is still going. Clears on refresh.</p>
+          </article>
         </div>
 
-        <section class="home-preview" aria-label="Sample results preview">
-          <div class="home-preview-head">
-            <h2>What the results page looks like</h2>
-            <p>
-              After a run, home steps aside. You get a summary strip, company overview,
-              the live chart, and three agent tabs — the same layout every ticker.
-            </p>
-          </div>
-          <div class="preview-metrics">
-            <div class="preview-metric">
-              <span class="metric-label">Trend</span>
-              <span class="metric-value positive">SIDEWAYS</span>
-            </div>
-            <div class="preview-metric">
-              <span class="metric-label">News</span>
-              <span class="metric-value">MIXED</span>
-            </div>
-            <div class="preview-metric">
-              <span class="metric-label">Health</span>
-              <span class="metric-value positive">ADEQUATE</span>
-            </div>
-            <div class="preview-metric">
-              <span class="metric-label">Projected move</span>
-              <span class="metric-value positive">+1.24%</span>
-            </div>
-          </div>
-          <div class="preview-agents">
-            <article class="preview-card">
-              <header>
-                <span class="preview-tag model">Forecast</span>
-                <h3>Price path</h3>
-              </header>
-              <p>
-                Interactive history with a dashed short-horizon overlay. Green or red
-                fills follow the period move, not a marketing color.
-              </p>
-            </article>
-            <article class="preview-card">
-              <header>
-                <span class="preview-tag a1">Agent 1</span>
-                <h3>Performance analyst</h3>
-              </header>
-              <p>
-                Explains whether the path is rising, falling, or flat — and how much
-                weight that signal deserves.
-              </p>
-            </article>
-            <article class="preview-card">
-              <header>
-                <span class="preview-tag a2">Agent 2</span>
-                <h3>Market expert</h3>
-              </header>
-              <p>
-                Filters for ticker-relevant headlines, then writes sentiment,
-                analysis, and implications with source links underneath.
-              </p>
-            </article>
-            <article class="preview-card">
-              <header>
-                <span class="preview-tag a3">Agent 3</span>
-                <h3>Financial analyst</h3>
-              </header>
-              <p>
-                Interprets revenue, margins, cash, leverage, and valuation from the
-                fundamentals snapshot. Health is set before the written note.
-              </p>
-            </article>
-          </div>
-        </section>
+        <header class="sec-h">
+          <h2>How a run works</h2>
+          <p>Click any stage to open it in Lab — Forecast chart or a specialist card.</p>
+        </header>
+        <div class="run-steps" id="homeFlow">
+          <button type="button" class="run-step" data-lab-forecast>
+            <span class="rs-num">1</span>
+            <span class="rs-body">
+              <strong>Forecast chart</strong>
+              <em>Build history + short projected path for the ticker.</em>
+            </span>
+          </button>
+          <button type="button" class="run-step" data-lab-agent="0">
+            <span class="rs-num">2</span>
+            <span class="rs-body">
+              <strong>Performance analyst</strong>
+              <em>Path-only trend note: BULLISH / BEARISH / NEUTRAL + caveats.</em>
+            </span>
+          </button>
+          <button type="button" class="run-step" data-lab-agent="1">
+            <span class="rs-num">3</span>
+            <span class="rs-body">
+              <strong>Market expert</strong>
+              <em>Headline tape tone grounded in Sources.</em>
+            </span>
+          </button>
+          <button type="button" class="run-step" data-lab-agent="2">
+            <span class="rs-num">4</span>
+            <span class="rs-body">
+              <strong>Financial analyst</strong>
+              <em>Fundamentals health: STRONG / ADEQUATE / STRESSED.</em>
+            </span>
+          </button>
+          <button type="button" class="run-step" data-lab-agent="3">
+            <span class="rs-num">5</span>
+            <span class="rs-body">
+              <strong>Risk analyst</strong>
+              <em>Downside / uncertainty: CONTAINED / MODERATE / ELEVATED.</em>
+            </span>
+          </button>
+          <button type="button" class="run-step" data-lab-agent="4">
+            <span class="rs-num">6</span>
+            <span class="rs-body">
+              <strong>Research brief</strong>
+              <em>Stitches the four notes into one memo — Stance locked to Performance trend.</em>
+            </span>
+          </button>
+        </div>
 
-        <section class="home-guide panel">
-          <div class="home-guide-grid">
-            <div>
-              <p class="panel-kicker">How to read a run</p>
-              <h2 class="panel-title">Treat the three agents as one packet</h2>
-              <p>
-                Start with the summary chips, then open the chart. Ask whether trend,
-                news tone, and financial health agree. Disagreement is useful —
-                a calm forecast with stressed fundamentals is a different story than
-                a bullish path with supportive headlines.
-              </p>
-              <p>
-                Confidence can drop when the forecast is a simpler fallback or when
-                an agent note needed extra checking. Low confidence is a caution flag,
-                not a failed run. Check important numbers against the chart, news
-                sources, or financial note.
-              </p>
-            </div>
-            <div class="home-guide-rules">
-              <div class="guide-rule">
-                <strong>Grounded numbers</strong>
-                <span>Agents explain the chart, headlines, and fundamentals — they don’t invent prices or figures.</span>
-              </div>
-              <div class="guide-rule">
-                <strong>Checked labels</strong>
-                <span>Trend, sentiment, and health are validated before you see them.</span>
-              </div>
-              <div class="guide-rule">
-                <strong>Research support only</strong>
-                <span>This workspace does not place trades or issue buy/sell recommendations.</span>
-              </div>
-              <button type="button" class="help-open-link" data-open-help>
-                Ask Guide about the agents
-              </button>
-            </div>
-          </div>
-        </section>
+        <header class="sec-h">
+          <h2>Quick start</h2>
+          <p>Pick a symbol or type your own in the navbar — then Run agents.</p>
+        </header>
+        <div class="bento" id="quickTickers">
+          <button type="button" class="quote-tile" data-ticker="AAPL">
+            <span class="quote-sym">AAPL</span>
+            <span class="quote-name">Apple</span>
+          </button>
+          <button type="button" class="quote-tile" data-ticker="MSFT">
+            <span class="quote-sym">MSFT</span>
+            <span class="quote-name">Microsoft</span>
+          </button>
+          <button type="button" class="quote-tile" data-ticker="NVDA">
+            <span class="quote-sym">NVDA</span>
+            <span class="quote-name">NVIDIA</span>
+          </button>
+          <button type="button" class="quote-tile" data-ticker="TSLA">
+            <span class="quote-sym">TSLA</span>
+            <span class="quote-name">Tesla</span>
+          </button>
+          <button type="button" class="quote-tile" data-ticker="GOOGL">
+            <span class="quote-sym">GOOGL</span>
+            <span class="quote-name">Alphabet</span>
+          </button>
+          <button type="button" class="quote-tile" data-ticker="ORCL">
+            <span class="quote-sym">ORCL</span>
+            <span class="quote-name">Oracle</span>
+          </button>
+        </div>
+
+        <aside class="home-limits panel">
+          <strong>Limits of this desk</strong>
+          <p>
+            Research support only — no trade placement, no portfolio management, no personalized buy/sell advice.
+            Specialists explain tool outputs; they should not invent prices, headlines, or statement figures.
+            Guide explains the product and agents — not live ticker recommendations.
+          </p>
+        </aside>
       </section>
 
-      <section id="results" class="results hidden">
-        <div class="results-layout">
-          <aside class="session-runs-panel" aria-label="Analyses on your desk this visit">
-            <div class="session-runs-head">
-              <h3>On your desk</h3>
-              <span id="sessionRunsCount" class="hint">0</span>
-            </div>
-            <ul id="sessionRunsList" class="session-runs-list"></ul>
-            <p class="session-runs-note">
-              This visit only — clears on refresh. While the next ticker runs, open a ready one to keep comparing.
+      <section id="lab" class="page-view hidden">
+        <header class="page-h lab-hero">
+          <div>
+            <p class="home-kicker">Interactive reference</p>
+            <h2>Lab</h2>
+            <p>
+              Learn the forecast chart and each specialist before you trust a report.
+              Expand any card for reads, writes, labels, and how to use it.
             </p>
-          </aside>
-          <div class="results-main">
-        <div class="results-anchor" id="resultsTop">
-          <div class="results-head-row">
-            <button type="button" class="ghost-btn" id="resultsBack" title="Back to home">
-              ← Back
-            </button>
-            <h2 class="results-heading">Results · <span id="resultsTicker">—</span></h2>
-            <div class="results-head-actions">
-              <span id="cacheBadge" class="cache-badge hidden" title="Whether this is a recent saved result or a fresh run"></span>
-              <button
-                type="button"
-                class="ghost-btn"
-                id="refreshAnalyze"
-                title="Run a brand-new analysis now"
-              >
-                Refresh analysis
-              </button>
+          </div>
+          <div class="lab-hero-stats">
+            <div class="lhs"><b>1</b><span>Forecast</span></div>
+            <div class="lhs"><b>5</b><span>Agents</span></div>
+            <div class="lhs"><b>9</b><span>Read steps</span></div>
+          </div>
+        </header>
+
+        <article class="forecast-lab panel" id="forecastLab">
+          <button type="button" class="forecast-lab-h" id="forecastLabToggle" aria-expanded="false">
+            <span class="am-code">FC</span>
+            <span>
+              <strong>Forecast chart</strong>
+              <em>The shared path every specialist must respect — click to expand</em>
+            </span>
+            <span class="chev" aria-hidden="true">▾</span>
+          </button>
+          <div class="forecast-lab-b hidden" id="forecastLabBody">
+            <p class="lab-lead">
+              Shows recent price history and a short forward path for the next sessions.
+              Projected move is the change from the last close to the final forecast point.
+              If confidence is Low, treat the path as less reliable.
+            </p>
+            <div class="lab-cols">
+              <div class="lab-col">
+                <h4>What it shows</h4>
+                <p>Solid line = observed closes. Dashed line = forecast. Range pills: 1M, 6M, 1Y, 5Y, MAX. Reset restores the view.</p>
+              </div>
+              <div class="lab-col">
+                <h4>How to use</h4>
+                <ul>
+                  <li>Start with 1Y, then narrow if needed</li>
+                  <li>Confirm every specialist claim against this chart</li>
+                  <li>Low confidence ⇒ lighter weight on the path</li>
+                  <li>Agents must not invent different prices than the chart</li>
+                </ul>
+              </div>
+            </div>
+            <div class="lab-labels">
+              <div class="lab-label"><b>History</b><span>Observed closes behind the forecast</span></div>
+              <div class="lab-label"><b>Horizon</b><span>Short forward stretch of sessions</span></div>
+              <div class="lab-label"><b>Projected move</b><span>Path stretch — not a promised return</span></div>
+              <div class="lab-label"><b>Low confidence</b><span>Caution flag on the path reading</span></div>
             </div>
           </div>
+        </article>
+
+        <header class="sec-h mid">
+          <h2>Agents</h2>
+          <p>Four specialists plus Research brief — expand for reads, writes, and tips.</p>
+        </header>
+        <div class="agent-lab-grid" id="specList"></div>
+
+        <header class="sec-h mid">
+          <h2>Recommended reading order</h2>
+          <p>After a run, walk the report in this sequence. Click a step to highlight it.</p>
+        </header>
+        <div class="read-order" id="readOrder">
+          <button type="button" class="ro-step" data-ro="0"><b>1</b><span>Glance at summary chips</span></button>
+          <button type="button" class="ro-step" data-ro="1"><b>2</b><span>Open the forecast chart</span></button>
+          <button type="button" class="ro-step" data-ro="2"><b>3</b><span>Performance analyst</span></button>
+          <button type="button" class="ro-step" data-ro="3"><b>4</b><span>Market expert + Sources</span></button>
+          <button type="button" class="ro-step" data-ro="4"><b>5</b><span>Financial analyst</span></button>
+          <button type="button" class="ro-step" data-ro="5"><b>6</b><span>Risk analyst</span></button>
+          <button type="button" class="ro-step" data-ro="6"><b>7</b><span>Research brief</span></button>
+          <button type="button" class="ro-step" data-ro="7"><b>8</b><span>Check agreement vs clash</span></button>
+          <button type="button" class="ro-step" data-ro="8"><b>9</b><span>Treat caution flags carefully</span></button>
         </div>
-        <div class="summary-grid" id="summaryGrid">
+        <article id="readOrderDetail" class="detail-card panel">
+          <h3>Start here</h3>
+          <p>Select a step above to see what to look for at that stage of a finished run.</p>
+        </article>
+      </section>
+
+      <section id="results" class="page-view results hidden">
+        <div class="report-bar" id="resultsTop">
+          <button type="button" class="ghost-btn" id="resultsBack" title="Back to home">← Home</button>
+          <div>
+            <p class="home-kicker">Report</p>
+            <h2 class="results-heading"><span id="resultsTicker">—</span></h2>
+          </div>
+          <div class="report-actions">
+            <span id="cacheBadge" class="cache-badge hidden" title="Whether this is a recent saved result or a fresh run"></span>
+            <button type="button" class="ghost-btn" id="refreshAnalyze" title="Run a brand-new analysis now">
+              Refresh analysis
+            </button>
+          </div>
+        </div>
+
+        <div class="tray" aria-label="Analyses on your desk this visit">
+          <span class="tray-label">On your desk <b id="sessionRunsCount">0</b></span>
+          <ul id="sessionRunsList" class="tray-list"></ul>
+        </div>
+
+        <div class="summary-grid kpi-board" id="summaryGrid">
           <button type="button" class="metric" data-metric="trend" aria-describedby="metricPopover">
             <div class="metric-label">Trend</div>
             <div id="metricTrend" class="metric-value">—</div>
@@ -394,6 +399,10 @@
           <button type="button" class="metric" data-metric="confidence" aria-describedby="metricPopover">
             <div class="metric-label">Confidence</div>
             <div id="metricConfidence" class="metric-value">—</div>
+          </button>
+          <button type="button" class="metric" data-metric="risk" aria-describedby="metricPopover">
+            <div class="metric-label">Risk</div>
+            <div id="metricRisk" class="metric-value">—</div>
           </button>
           <button type="button" class="metric" data-metric="projected_move" aria-describedby="metricPopover">
             <div class="metric-label">Projected move</div>
@@ -417,94 +426,116 @@
           </div>
         </div>
 
-        <section class="panel company-panel" id="companyPanel">
-          <div class="company-head">
-            <div>
-              <p class="company-kicker" id="companyExchange">Company</p>
-              <h2 class="company-name" id="companyName">—</h2>
-              <p class="company-meta" id="companyMeta"></p>
-            </div>
-          </div>
-          <p class="company-summary" id="companySummary">Loading company overview…</p>
-        </section>
-
-        <section class="panel chart-panel">
-          <div class="panel-head chart-panel-head">
-            <div>
-              <h2 class="panel-title">Price &amp; forecast</h2>
-              <div class="meta-row meta-row-wrap" id="forecastMeta"></div>
-            </div>
-            <div class="chart-tools">
-              <div class="range-pills" id="chartRanges" role="tablist" aria-label="Chart range">
-                <button type="button" class="range-pill" data-range="1M">1M</button>
-                <button type="button" class="range-pill" data-range="6M">6M</button>
-                <button type="button" class="range-pill active" data-range="1Y">1Y</button>
-                <button type="button" class="range-pill" data-range="5Y">5Y</button>
-                <button type="button" class="range-pill" data-range="MAX">MAX</button>
+        <div class="split">
+          <section class="panel company-panel" id="companyPanel">
+            <div class="company-head">
+              <div>
+                <p class="company-kicker" id="companyExchange">Company</p>
+                <h2 class="company-name" id="companyName">—</h2>
+                <p class="company-meta" id="companyMeta"></p>
               </div>
-              <button type="button" class="ghost-btn" id="chartReset" title="Reset zoom">Reset</button>
             </div>
-          </div>
-          <div id="forecastChart" class="chart-box chart-box-tall"></div>
-          <p class="chart-hint">Solid = actual closes · Dashed = forecast · Green/red by period move</p>
-          <details class="table-details">
-            <summary>Forecast session values</summary>
-            <div class="table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Value</th>
-                  </tr>
-                </thead>
-                <tbody id="forecastTableBody"></tbody>
-              </table>
-            </div>
-          </details>
-        </section>
+            <p class="company-summary" id="companySummary">Loading company overview…</p>
+          </section>
 
-        <section class="panel agents-tab-panel" id="agentsPanel">
-          <div class="agent-tabs" role="tablist" aria-label="Agents">
-            <button type="button" class="agent-tab active" role="tab" aria-selected="true" data-agent-tab="a1" id="tabAgent1">
-              Performance analyst
+          <section class="panel chart-panel">
+            <div class="panel-head chart-panel-head">
+              <div>
+                <h2 class="panel-title">Price &amp; forecast</h2>
+                <div class="meta-row meta-row-wrap" id="forecastMeta"></div>
+              </div>
+              <div class="chart-tools">
+                <div class="range-pills" id="chartRanges" role="tablist" aria-label="Chart range">
+                  <button type="button" class="range-pill" data-range="1M">1M</button>
+                  <button type="button" class="range-pill" data-range="6M">6M</button>
+                  <button type="button" class="range-pill active" data-range="1Y">1Y</button>
+                  <button type="button" class="range-pill" data-range="5Y">5Y</button>
+                  <button type="button" class="range-pill" data-range="MAX">MAX</button>
+                </div>
+                <button type="button" class="ghost-btn" id="chartReset" title="Reset zoom">Reset</button>
+              </div>
+            </div>
+            <div id="forecastChart" class="chart-box chart-box-tall"></div>
+            <p class="chart-hint">Solid = actual closes · Dashed = forecast · Green/red by period move</p>
+            <details class="table-details">
+              <summary>Forecast session values</summary>
+              <div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Value</th>
+                    </tr>
+                  </thead>
+                  <tbody id="forecastTableBody"></tbody>
+                </table>
+              </div>
+            </details>
+          </section>
+        </div>
+
+        <section class="panel agents-compact" id="agentsPanel">
+          <div class="row-between">
+            <h3 class="panel-title" style="margin:0">Agents</h3>
+            <button type="button" class="help-open-link" data-open-help>Ask Guide what these agents do</button>
+          </div>
+          <div class="agent-deck" id="agentDeck" role="tablist" aria-label="Agents">
+            <button type="button" class="agent-mini on" role="tab" aria-selected="true" data-agent-tab="a1" id="tabAgent1">
+              <span class="am-code">P</span>
+              <span class="am-copy"><strong>Performance</strong><em id="agent1ChipPreview">—</em></span>
             </button>
-            <button type="button" class="agent-tab" role="tab" aria-selected="false" data-agent-tab="a2" id="tabAgent2">
-              Market expert
+            <button type="button" class="agent-mini" role="tab" aria-selected="false" data-agent-tab="a2" id="tabAgent2">
+              <span class="am-code">M</span>
+              <span class="am-copy"><strong>Market</strong><em id="agent2ChipPreview">—</em></span>
             </button>
-            <button type="button" class="agent-tab" role="tab" aria-selected="false" data-agent-tab="a3" id="tabAgent3">
-              Financial analyst
+            <button type="button" class="agent-mini" role="tab" aria-selected="false" data-agent-tab="a3" id="tabAgent3">
+              <span class="am-code">F</span>
+              <span class="am-copy"><strong>Financial</strong><em id="agent3ChipPreview">—</em></span>
+            </button>
+            <button type="button" class="agent-mini" role="tab" aria-selected="false" data-agent-tab="a4" id="tabAgent4">
+              <span class="am-code">R</span>
+              <span class="am-copy"><strong>Risk</strong><em id="agent4ChipPreview">—</em></span>
+            </button>
+            <button type="button" class="agent-mini" role="tab" aria-selected="false" data-agent-tab="a5" id="tabAgent5">
+              <span class="am-code">B</span>
+              <span class="am-copy"><strong>Brief</strong><em id="agent5ChipPreview">—</em></span>
             </button>
           </div>
-          <button type="button" class="help-open-link" data-open-help style="margin: 8px 0 4px">
-            Ask Guide what these agents do
-          </button>
-          <div class="agent-tab-panels">
+          <div class="agent-stage">
             <div class="agent-tab-panel" id="agent1Panel" role="tabpanel" data-agent-panel="a1">
-              <div class="agent-hero">
-                <div>
-                  <p class="agent-kicker">Forecast-path research note</p>
-                  <div id="agent1Chips" class="agent-chips"></div>
-                </div>
+              <div class="agent-stage-head">
+                <p class="agent-kicker">Forecast-path research note</p>
+                <div id="agent1Chips" class="agent-chips"></div>
               </div>
               <div id="agent1Body" class="agent-prose"></div>
             </div>
             <div class="agent-tab-panel hidden" id="agent2Panel" role="tabpanel" data-agent-panel="a2">
-              <div class="agent-hero">
-                <div>
-                  <p class="agent-kicker">Headline briefing</p>
-                  <div id="agent2Chips" class="agent-chips"></div>
-                </div>
+              <div class="agent-stage-head">
+                <p class="agent-kicker">Headline briefing</p>
+                <div id="agent2Chips" class="agent-chips"></div>
               </div>
               <div id="agent2Body" class="agent-prose"></div>
             </div>
             <div class="agent-tab-panel hidden" id="agent3Panel" role="tabpanel" data-agent-panel="a3">
-              <div class="agent-hero">
-                <div>
-                  <p class="agent-kicker">Fundamentals research note</p>
-                  <div id="agent3Chips" class="agent-chips"></div>
-                </div>
+              <div class="agent-stage-head">
+                <p class="agent-kicker">Fundamentals research note</p>
+                <div id="agent3Chips" class="agent-chips"></div>
               </div>
               <div id="agent3Body" class="agent-prose"></div>
+            </div>
+            <div class="agent-tab-panel hidden" id="agent4Panel" role="tabpanel" data-agent-panel="a4">
+              <div class="agent-stage-head">
+                <p class="agent-kicker">Downside and uncertainty note</p>
+                <div id="agent4Chips" class="agent-chips"></div>
+              </div>
+              <div id="agent4Body" class="agent-prose"></div>
+            </div>
+            <div class="agent-tab-panel hidden" id="agent5Panel" role="tabpanel" data-agent-panel="a5">
+              <div class="agent-stage-head">
+                <p class="agent-kicker">Synthesis research brief</p>
+                <div id="agent5Chips" class="agent-chips"></div>
+              </div>
+              <div id="agent5Body" class="agent-prose"></div>
             </div>
           </div>
         </section>
@@ -518,8 +549,6 @@
         </section>
 
         <p id="runMeta" class="run-meta"></p>
-          </div>
-        </div>
       </section>
     </main>
 
@@ -565,6 +594,8 @@
           <button type="button" class="help-suggest" data-help-q="What does the Performance analyst do?">Performance analyst</button>
           <button type="button" class="help-suggest" data-help-q="What does the Market expert do?">Market expert</button>
           <button type="button" class="help-suggest" data-help-q="What does the Financial analyst do?">Financial analyst</button>
+          <button type="button" class="help-suggest" data-help-q="What does the Risk analyst do?">Risk analyst</button>
+          <button type="button" class="help-suggest" data-help-q="What does the Research brief do?">Research brief</button>
           <button type="button" class="help-suggest" data-help-q="How do I read a finished run?">How to read a run</button>
           <button type="button" class="help-suggest" data-help-q="What is On your desk?">On your desk</button>
         </div>

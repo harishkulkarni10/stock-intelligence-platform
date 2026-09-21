@@ -106,7 +106,7 @@ class AnalyzeResponse(BaseModel):
 
     status: str
     ticker: str
-    mode: str | None = "performance_news_financial"
+    mode: str | None = "performance_news_financial_risk_report"
     final_report: str | None = None
     recommendation: str | None = None
     confidence: str | None = None
@@ -124,6 +124,13 @@ class AnalyzeResponse(BaseModel):
     financial_guardrail_ok: bool | None = None
     financial_repaired: bool | None = None
     financials: dict[str, Any] = Field(default_factory=dict)
+    risk_analysis: str | None = None
+    risk_level: str | None = None
+    risk_guardrail_ok: bool | None = None
+    risk_repaired: bool | None = None
+    risk: dict[str, Any] = Field(default_factory=dict)
+    report_guardrail_ok: bool | None = None
+    report_repaired: bool | None = None
     company: dict[str, Any] = Field(default_factory=dict)
     draft_report: str | None = None
     predictions: dict[str, Any] = Field(default_factory=dict)

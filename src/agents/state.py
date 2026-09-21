@@ -27,10 +27,17 @@ class AgentState(MessagesState, total=False):
     financial_health: str
     financial_guardrail_ok: bool
     financial_repaired: bool
+    risk: dict[str, Any]
+    risk_analysis: str
+    risk_level: str
+    risk_guardrail_ok: bool
+    risk_repaired: bool
     draft_report: str
     final_report: str
     recommendation: str
     confidence: str
+    report_guardrail_ok: bool
+    report_repaired: bool
 
 
 class AnalyzeResult(TypedDict, total=False):
@@ -54,6 +61,13 @@ class AnalyzeResult(TypedDict, total=False):
     financial_guardrail_ok: bool
     financial_repaired: bool
     financials: dict[str, Any]
+    risk_analysis: str
+    risk_level: str
+    risk_guardrail_ok: bool
+    risk_repaired: bool
+    risk: dict[str, Any]
+    report_guardrail_ok: bool
+    report_repaired: bool
     company: dict[str, Any]
     draft_report: str
     predictions: dict[str, Any]

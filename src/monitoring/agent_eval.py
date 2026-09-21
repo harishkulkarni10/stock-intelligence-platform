@@ -22,6 +22,13 @@ from src.agents.performance_guardrails import (
     run_performance_harness,
     validate_performance_analysis,
 )
+from src.agents.report_guardrails import (
+    build_report_facts,
+    deterministic_report,
+    run_report_harness,
+    stance_from_trend,
+    validate_report,
+)
 from src.agents.tools import (
     format_financials_for_prompt,
     format_forecast_for_prompt,
@@ -439,15 +446,183 @@ def evaluate_financial_fixtures() -> dict[str, Any]:
     return {"ok": passed, "cases": rows}
 
 
+REPORT_EVAL_FIXTURES: tuple[dict[str, Any], ...] = (
+    {
+        "id": "report_neutral_low",
+        "ticker": "NVDA",
+        "forecast": {
+            "status": "ok",
+            "ticker": "NVDA",
+            "last_close": 100.0,
+            "model_source": "persistence",
+            "predictions": [
+                {"step": 1, "value": 100.0},
+                {"step": 2, "value": 100.0},
+                {"step": 3, "value": 100.0},
+                {"step": 4, "value": 100.0},
+                {"step": 5, "value": 100.0},
+            ],
+        },
+        "performance_trend": "SIDEWAYS",
+        "news_sentiment": "MIXED",
+        "financial_health": "ADEQUATE",
+        "risk_level": "MODERATE",
+        "confidence": "Low",
+        "expected_stance": "NEUTRAL",
+    },
+    {
+        "id": "report_bullish_medium",
+        "ticker": "AAPL",
+        "forecast": {
+            "status": "ok",
+            "ticker": "AAPL",
+            "last_close": 100.0,
+            "model_source": "child",
+            "predictions": [
+                {"step": 1, "value": 101.0},
+                {"step": 2, "value": 103.0},
+                {"step": 3, "value": 105.0},
+                {"step": 4, "value": 107.0},
+                {"step": 5, "value": 110.0},
+            ],
+        },
+        "performance_trend": "BULLISH",
+        "news_sentiment": "POSITIVE",
+        "financial_health": "STRONG",
+        "risk_level": "CONTAINED",
+        "confidence": "Medium",
+        "expected_stance": "BULLISH",
+    },
+    {
+        "id": "invented_price_must_fail",
+        "ticker": "MSFT",
+        "forecast": {
+            "status": "ok",
+            "ticker": "MSFT",
+            "last_close": 400.0,
+            "model_source": "parent",
+            "predictions": [
+                {"step": 1, "value": 395.0},
+                {"step": 5, "value": 370.0},
+            ],
+        },
+        "performance_trend": "BEARISH",
+        "news_sentiment": "NEGATIVE",
+        "financial_health": "STRESSED",
+        "risk_level": "ELEVATED",
+        "confidence": "Medium",
+        "expected_stance": "BEARISH",
+        "bad_analysis": (
+            "Stance: BEARISH\n"
+            "Confidence: Medium\n\n"
+            "Executive summary:\n"
+            "MSFT looks weak with BEARISH path, NEGATIVE news, STRESSED health, "
+            "ELEVATED risk, but somehow targets an invented 999.99 print that is not "
+            "in the forecast packet at all and must be rejected by grounding.\n\n"
+            "Forecast / performance:\nPath is BEARISH.\n\n"
+            "News:\nTone NEGATIVE.\n\n"
+            "Fundamentals:\nHealth STRESSED.\n\n"
+            "Risk:\nLabel ELEVATED.\n\n"
+            "Bull case:\n- None.\n\n"
+            "Bear case:\n- Path lower.\n\n"
+            "Key drivers:\n- Path.\n\n"
+            "Key risks:\n- ELEVATED.\n\n"
+            "Caveats: Research only."
+        ),
+        "expect_validation_ok": False,
+    },
+)
+
+
+def evaluate_report_fixtures() -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for fixture in REPORT_EVAL_FIXTURES:
+        forecast = fixture["forecast"]
+        facts = build_report_facts(
+            ticker=fixture["ticker"],
+            forecast=forecast,
+            forecast_text=format_forecast_for_prompt(forecast),
+            performance_trend=fixture["performance_trend"],
+            performance_analysis=f"Trend: {fixture['performance_trend']}\nAnalysis:\nFixture.",
+            news_sentiment=fixture["news_sentiment"],
+            news_summary=f"Sentiment: {fixture['news_sentiment']}\nAnalysis:\nFixture.",
+            financial_health=fixture["financial_health"],
+            financial_analysis=f"Health: {fixture['financial_health']}\nAnalysis:\nFixture.",
+            risk_level=fixture["risk_level"],
+            risk_analysis=f"Risk: {fixture['risk_level']}\nAnalysis:\nFixture.",
+            confidence=fixture["confidence"],
+        )
+        stance_ok = facts.stance == fixture["expected_stance"]
+        stance_ok = stance_ok and stance_from_trend(fixture["performance_trend"]) == fixture[
+            "expected_stance"
+        ]
+        row: dict[str, Any] = {
+            "id": fixture["id"],
+            "stance_ok": stance_ok,
+            "expected_stance": fixture["expected_stance"],
+            "got_stance": facts.stance,
+            "confidence": facts.confidence,
+        }
+        if "bad_analysis" in fixture:
+            check = validate_report(fixture["bad_analysis"], facts)
+            row["validation_ok"] = check.ok
+            row["validation_pass"] = check.ok == fixture.get("expect_validation_ok", True)
+            row["errors"] = list(check.errors)
+        else:
+            good = deterministic_report(facts)
+            check = validate_report(good, facts)
+            row["validation_ok"] = check.ok
+            row["validation_pass"] = check.ok
+
+            class _BadLLM:
+                def invoke(self, messages):
+                    return (
+                        "Stance: BULLISH\n"
+                        "Confidence: High\n\n"
+                        "Executive summary:\n"
+                        "Buy now at 999.99 regardless of the packet.\n\n"
+                        "Caveats: none"
+                    )
+
+            recovered = run_report_harness(
+                ticker=fixture["ticker"],
+                forecast=forecast,
+                forecast_text=format_forecast_for_prompt(forecast),
+                performance_trend=fixture["performance_trend"],
+                news_sentiment=fixture["news_sentiment"],
+                financial_health=fixture["financial_health"],
+                risk_level=fixture["risk_level"],
+                confidence=fixture["confidence"],
+                llm=_BadLLM(),
+                max_attempts=1,
+            )
+            row["harness_recovers"] = (
+                recovered["report_guardrail_ok"]
+                and recovered["recommendation"] == fixture["expected_stance"]
+                and recovered["confidence"] == fixture["confidence"]
+                and "999.99" not in recovered["final_report"]
+                and "buy now" not in recovered["final_report"].lower()
+            )
+        rows.append(row)
+
+    passed = all(
+        r["stance_ok"] and r.get("validation_pass", True) and r.get("harness_recovers", True)
+        for r in rows
+    )
+    return {"ok": passed, "cases": rows}
+
+
 def evaluate_all_agent_fixtures() -> dict[str, Any]:
     performance = evaluate_performance_fixtures()
     news = evaluate_news_fixtures()
     financial = evaluate_financial_fixtures()
+    report = evaluate_report_fixtures()
     return {
-        "ok": performance["ok"] and news["ok"] and financial["ok"],
+        "ok": performance["ok"] and news["ok"] and financial["ok"] and report["ok"],
         "performance": performance,
         "news": news,
         "financial": financial,
+        "report": report,
     }
 
 
@@ -460,6 +635,9 @@ class AgentEvaluator:
 
     def evaluate_financial(self) -> dict[str, Any]:
         return evaluate_financial_fixtures()
+
+    def evaluate_report(self) -> dict[str, Any]:
+        return evaluate_report_fixtures()
 
     def evaluate_all(self) -> dict[str, Any]:
         return evaluate_all_agent_fixtures()

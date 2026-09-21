@@ -203,7 +203,7 @@ def test_explain_summary_chips_uses_llm_and_fallback():
         confidence="Low",
         forecast=_flat_forecast(),
     )
-    assert set(fallback) == {"trend", "news", "confidence", "projected_move"}
+    assert set(fallback) == {"trend", "news", "confidence", "projected_move", "risk"}
     assert "SIDEWAYS" in fallback["trend"]
 
     det = deterministic_chip_explanations(

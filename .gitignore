@@ -40,3 +40,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.ipynb_checkpoints/
+
+# Local UI experiments - do not commit
+frontendtesting/

@@ -22,7 +22,7 @@ def test_analyze_stock_missing_model(monkeypatch):
 
     assert result["status"] == "missing_model"
     assert result["ticker"] == "NVDA"
-    assert result["mode"] == "performance_news_financial"
+    assert result["mode"] == "performance_news_financial_risk_report"
 
 
 def test_analyze_stock_happy_path_performance_news_financial(monkeypatch):
@@ -88,6 +88,46 @@ def test_analyze_stock_happy_path_performance_news_financial(monkeypatch):
                     "metrics": {"revenue": 1.0},
                     "signals": {"profitability": "stable", "leverage": "moderate", "valuation": "fair"},
                 },
+                "risk_analysis": (
+                    "Risk: MODERATE\n"
+                    "Analysis:\nFixture risk note with enough length to satisfy "
+                    "UI rendering without inventing live market figures in this unit test.\n"
+                    "Market / path risks:\n- Fixture.\n"
+                    "Financial risks:\n- Fixture.\n"
+                    "News / event risks:\n- Fixture.\n"
+                    "Forecast / model risks:\n- Fixture.\n"
+                    "Key downside scenarios:\n- Fixture.\n"
+                    "Caveats: Fixture."
+                ),
+                "risk_level": "MODERATE",
+                "risk_guardrail_ok": True,
+                "risk_repaired": False,
+                "risk": {"allowed_risk": "MODERATE", "metrics": {}},
+                "final_report": (
+                    "Stance: NEUTRAL\n"
+                    "Confidence: Low\n\n"
+                    "Executive summary:\n"
+                    "Fixture research brief for NVDA with SIDEWAYS path, MIXED news, "
+                    "ADEQUATE health, and MODERATE risk on this short window.\n\n"
+                    "Forecast / performance:\nFlat path.\n\n"
+                    "News:\nMIXED.\n\n"
+                    "Fundamentals:\nADEQUATE.\n\n"
+                    "Risk:\nMODERATE.\n\n"
+                    "Bull case:\n- None strong.\n\n"
+                    "Bear case:\n- Risk MODERATE.\n\n"
+                    "Key drivers:\n- Path flat.\n\n"
+                    "Key risks:\n- MODERATE.\n\n"
+                    "Caveats: Research support only."
+                ),
+                "draft_report": (
+                    "Stance: NEUTRAL\n"
+                    "Confidence: Low\n\n"
+                    "Executive summary:\nFixture draft."
+                ),
+                "recommendation": "NEUTRAL",
+                "confidence": "Low",
+                "report_guardrail_ok": True,
+                "report_repaired": False,
             }
 
     monkeypatch.setattr(graph, "get_forecast", lambda ticker: forecast)
@@ -109,19 +149,25 @@ def test_analyze_stock_happy_path_performance_news_financial(monkeypatch):
             "news": "News blurb for test.",
             "confidence": "Confidence blurb for test.",
             "projected_move": "Move blurb for test.",
+            "risk": "Risk blurb for test.",
         },
     )
 
     result = graph.analyze_stock("NVDA")
 
     assert result["status"] == "ok"
-    assert result["mode"] == "performance_news_financial"
+    assert result["mode"] == "performance_news_financial_risk_report"
     assert result["performance_trend"] == "SIDEWAYS"
     assert result["recommendation"] == "NEUTRAL"
     assert result["news_sentiment"] == "MIXED"
     assert result["news_guardrail_ok"] is True
     assert result["financial_health"] == "ADEQUATE"
     assert result["financial_guardrail_ok"] is True
+    assert result["risk_level"] == "MODERATE"
+    assert result["risk_guardrail_ok"] is True
+    assert result["report_guardrail_ok"] is True
+    assert "Stance: NEUTRAL" in (result.get("final_report") or "")
+    assert "Risk:" in (result.get("risk_analysis") or "")
     assert result["financials"]["coverage"] == "partial"
     assert result["predictions"]["forecast"][0]["value"] == 100.0
     assert result["cached"] is False
@@ -172,6 +218,17 @@ def test_analyze_stock_force_refresh_skips_cache(monkeypatch):
                 "financial_guardrail_ok": True,
                 "financial_repaired": False,
                 "financials": {"coverage": "partial", "allowed_health": "ADEQUATE"},
+                "risk_analysis": "Risk: MODERATE\nAnalysis:\nFresh.",
+                "risk_level": "MODERATE",
+                "risk_guardrail_ok": True,
+                "risk_repaired": False,
+                "risk": {},
+                "final_report": "Stance: NEUTRAL\nConfidence: Low\n\nExecutive summary:\nFresh brief.",
+                "draft_report": "Stance: NEUTRAL\nConfidence: Low\n\nExecutive summary:\nFresh brief.",
+                "recommendation": "NEUTRAL",
+                "confidence": "Low",
+                "report_guardrail_ok": True,
+                "report_repaired": False,
             }
 
     forecast = {
@@ -204,6 +261,7 @@ def test_analyze_stock_force_refresh_skips_cache(monkeypatch):
             "news": "n",
             "confidence": "c",
             "projected_move": "m",
+            "risk": "r",
         },
     )
 

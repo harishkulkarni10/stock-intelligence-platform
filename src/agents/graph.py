@@ -1,7 +1,7 @@
 """LangGraph assembly and analyze_stock orchestrator.
 
-Production default: Performance → Market Expert → Financial Analyst.
-Report/critic remain available via build_full_graph().
+Production default: Performance → Market Expert → Financial Analyst → Risk Analyst
+→ Report. Critic remains available via build_full_graph() only.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from src.agents.nodes import (
     market_expert_node,
     performance_analyst_node,
     report_generator_node,
+    risk_analyst_node,
 )
 from src.agents.llm import get_chat_llm
 from src.agents.performance_guardrails import explain_summary_chips
@@ -31,19 +32,24 @@ from src.memory.semantic_cache import ReportCache
 
 logger = get_logger("sip.analyze")
 
-ANALYZE_CACHE_PREFIX = "analyze-perf-news-fin-v2"
-ANALYZE_MODE = "performance_news_financial"
+ANALYZE_CACHE_PREFIX = "analyze-perf-news-fin-risk-report-v1"
+ANALYZE_MODE = "performance_news_financial_risk_report"
 
 
 def build_performance_news_financial_graph():
+    """Live five-agent path (name kept for import compatibility)."""
     graph = StateGraph(AgentState)
     graph.add_node("perf", performance_analyst_node)
     graph.add_node("news", market_expert_node)
     graph.add_node("financial", financial_analyst_node)
+    graph.add_node("risk", risk_analyst_node)
+    graph.add_node("report", report_generator_node)
     graph.set_entry_point("perf")
     graph.add_edge("perf", "news")
     graph.add_edge("news", "financial")
-    graph.add_edge("financial", END)
+    graph.add_edge("financial", "risk")
+    graph.add_edge("risk", "report")
+    graph.add_edge("report", END)
     return graph.compile()
 
 
@@ -71,12 +77,14 @@ def build_full_graph():
     graph.add_node("perf", performance_analyst_node)
     graph.add_node("news", market_expert_node)
     graph.add_node("financial", financial_analyst_node)
+    graph.add_node("risk", risk_analyst_node)
     graph.add_node("report", report_generator_node)
     graph.add_node("critic", critic_node)
     graph.set_entry_point("perf")
     graph.add_edge("perf", "news")
     graph.add_edge("news", "financial")
-    graph.add_edge("financial", "report")
+    graph.add_edge("financial", "risk")
+    graph.add_edge("risk", "report")
     graph.add_edge("report", "critic")
     graph.add_edge("critic", END)
     return graph.compile()
@@ -148,13 +156,21 @@ def _analyze_dto(
     repaired = bool(graph_result.get("performance_repaired"))
     analysis = graph_result.get("performance_analysis", "")
     news_summary = graph_result.get("news_summary")
-    confidence = _confidence_for_forecast(forecast, repaired=repaired)
+    confidence = graph_result.get("confidence") or _confidence_for_forecast(
+        forecast, repaired=repaired
+    )
+    recommendation = graph_result.get("recommendation") or _stance_from_trend(trend)
+    final_report = (
+        graph_result.get("final_report")
+        or graph_result.get("draft_report")
+        or analysis
+    )
     return {
         "status": "ok",
         "ticker": ticker,
         "mode": ANALYZE_MODE,
-        "final_report": analysis,
-        "recommendation": _stance_from_trend(trend),
+        "final_report": final_report,
+        "recommendation": recommendation,
         "confidence": confidence,
         "performance_analysis": analysis,
         "performance_trend": trend,
@@ -170,8 +186,15 @@ def _analyze_dto(
         "financial_guardrail_ok": graph_result.get("financial_guardrail_ok"),
         "financial_repaired": graph_result.get("financial_repaired"),
         "financials": _financials_dto(graph_result.get("financials")),
+        "risk_analysis": graph_result.get("risk_analysis"),
+        "risk_level": graph_result.get("risk_level"),
+        "risk_guardrail_ok": graph_result.get("risk_guardrail_ok"),
+        "risk_repaired": graph_result.get("risk_repaired"),
+        "risk": graph_result.get("risk") or {},
+        "report_guardrail_ok": graph_result.get("report_guardrail_ok"),
+        "report_repaired": graph_result.get("report_repaired"),
         "company": company or {},
-        "draft_report": None,
+        "draft_report": graph_result.get("draft_report"),
         "predictions": _predictions_dto(forecast),
         "metric_explanations": metric_explanations or {},
         "cached": cached,
@@ -187,7 +210,7 @@ def analyze_stock(
     *,
     force_refresh: bool = False,
 ) -> AnalyzeResult:
-    """Champion forecast → A1 performance → A2 news → A3 financial."""
+    """Champion forecast → A1 → A2 → A3 → A4 risk → A5 report."""
     del thread_id
     symbol = normalize_ticker(ticker)
     set_ticker(symbol)
@@ -307,7 +330,9 @@ def analyze_stock(
     graph_ms = (time.perf_counter() - graph_started) * 1000
 
     repaired = bool(result.get("performance_repaired"))
-    confidence = _confidence_for_forecast(forecast, repaired=repaired)
+    confidence = result.get("confidence") or _confidence_for_forecast(
+        forecast, repaired=repaired
+    )
     chip_started = time.perf_counter()
     metric_explanations = explain_summary_chips(
         ticker=symbol,
@@ -317,6 +342,8 @@ def analyze_stock(
         forecast=forecast,
         performance_analysis=result.get("performance_analysis"),
         news_summary=result.get("news_summary"),
+        risk_level=result.get("risk_level"),
+        risk_analysis=result.get("risk_analysis"),
         llm=get_chat_llm(),
     )
     log_event(
@@ -353,9 +380,14 @@ def analyze_stock(
             "trend": dto.get("performance_trend"),
             "sentiment": dto.get("news_sentiment"),
             "health": dto.get("financial_health"),
+            "risk": dto.get("risk_level"),
+            "stance": dto.get("recommendation"),
+            "confidence": dto.get("confidence"),
             "perf_guardrail": dto.get("performance_guardrail_ok"),
             "news_guardrail": dto.get("news_guardrail_ok"),
             "fin_guardrail": dto.get("financial_guardrail_ok"),
+            "risk_guardrail": dto.get("risk_guardrail_ok"),
+            "report_guardrail": dto.get("report_guardrail_ok"),
         },
     )
     return dto

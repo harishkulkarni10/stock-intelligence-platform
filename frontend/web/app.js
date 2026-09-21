@@ -3,34 +3,157 @@ const TIMEOUT_MS = 600000;
 
 let threadId = crypto.randomUUID();
 let homeChartReady = false;
-
-const PIPE_COPY = [
-  {
-    title: "Forecast",
-    body: "Builds the price path on your chart — recent closes plus a short projected stretch. Agents read this path; they don’t invent those prices.",
-  },
-  {
-    title: "Performance analyst",
-    body: "Explains what the forecast path implies: direction, how orderly it looks, and how much weight that signal deserves. The trend label has to match the numbers.",
-  },
-  {
-    title: "Market expert",
-    body: "Pulls recent headlines tied to the ticker, then writes tone, analysis, and implications. If nothing useful turns up, news shows as unavailable instead of inventing a story.",
-  },
-  {
-    title: "Financial analyst",
-    body: "Reviews company fundamentals — revenue, margins, cash, leverage, valuation — and writes health, strengths, and weaknesses from those figures only.",
-  },
-];
-
 let loadStepTimer = null;
 let chartRange = "1Y";
 let activeAgentTab = "a1";
 let analyzeInFlight = false;
 let runningTicker = null;
 let lastAnalyzePayload = null;
+let activeView = "home";
 
 const DESK_STORE_MAX = 20;
+
+const SPECS = [
+  {
+    code: "P",
+    name: "Performance analyst",
+    one: "Near-term direction from the forecast path",
+    role: "Explain what the forecast path implies for near-term direction.",
+    reads: "Only the forecast chart path and related path metrics (not news, not financial statements).",
+    writes: "A compact research note covering trend, how orderly the path looks, projected move framing, and caveats.",
+    how: [
+      "Confirm the trend claim against the chart direction and projected move",
+      "Read caveats before trusting a strong-sounding stance",
+      "Do not treat Performance alone as a full investment view — pair it with news and fundamentals",
+    ],
+    labels: [
+      { name: "BULLISH / BEARISH / NEUTRAL", tip: "Trend on this short horizon." },
+      { name: "Low confidence", tip: "Caution — often a simpler fallback path." },
+    ],
+    tags: ["BULLISH", "BEARISH", "NEUTRAL", "Low confidence"],
+  },
+  {
+    code: "M",
+    name: "Market expert",
+    one: "News briefing for the ticker",
+    role: "Brief the current news tape for the ticker.",
+    reads: "Recent headlines tied to the ticker (sometimes peer context).",
+    writes: "Sentiment / tone, short analysis, implications, grounded in Sources.",
+    how: [
+      "Open Sources and check that key claims match real headlines",
+      "Thin or stale coverage means treat the briefing lightly",
+      "News can disagree with the forecast path; that disagreement is useful signal",
+    ],
+    labels: [
+      { name: "POSITIVE / NEGATIVE / MIXED", tip: "Headline tone." },
+      { name: "UNAVAILABLE", tip: "Not enough useful headlines — no invention." },
+    ],
+    tags: ["POSITIVE", "NEGATIVE", "MIXED", "UNAVAILABLE"],
+  },
+  {
+    code: "F",
+    name: "Financial analyst",
+    one: "Fundamentals health from a snapshot",
+    role: "Assess company fundamentals health from a fundamentals snapshot.",
+    reads: "Figures such as revenue, margins, cash, leverage, and valuation-style metrics when available.",
+    writes: "Health label, strengths, weaknesses, and caveats.",
+    how: [
+      "Match any magnitude claims to what the note itself shows",
+      "Stressed health with a calm forecast (or the reverse) is a prompt to dig deeper",
+      "Fundamentals move slower than headlines; do not expect them to explain every one-day move",
+    ],
+    labels: [
+      { name: "STRONG / ADEQUATE / STRESSED", tip: "Overall fundamental status." },
+      { name: "UNAVAILABLE", tip: "Limited coverage — figures are not invented." },
+    ],
+    tags: ["STRONG", "ADEQUATE", "STRESSED", "UNAVAILABLE"],
+  },
+  {
+    code: "R",
+    name: "Risk analyst",
+    one: "Downside and uncertainty for this run",
+    role: "Explain downside and uncertainty — how fragile the packet looks.",
+    reads: "Coded path volatility / drawdown / projected-move size, plus Performance, Market, and Financial labels.",
+    writes: "Risk label, short analysis, downside scenarios, caveats.",
+    how: [
+      "Elevated risk with a bullish path means direction may look up, but trust or volatility is weaker",
+      "Contained risk is not a guarantee of calm markets",
+      "Pair Risk with the other three notes; do not use it alone as a trade call",
+    ],
+    labels: [
+      { name: "CONTAINED", tip: "More limited downside / uncertainty for this packet." },
+      { name: "MODERATE", tip: "Middle-band fragility." },
+      { name: "ELEVATED", tip: "Higher downside / uncertainty flags." },
+    ],
+    tags: ["CONTAINED", "MODERATE", "ELEVATED"],
+  },
+  {
+    code: "B",
+    name: "Research brief",
+    one: "Stitched memo from the four specialist notes",
+    role: "Synthesize the four specialist notes into one short research memo.",
+    reads: "Performance, Market, Financial, and Risk notes plus the forecast path facts.",
+    writes: "Locked Stance and Confidence, executive summary, bull/bear cases, drivers, risks, caveats.",
+    how: [
+      "Use the brief after the specialist notes, not instead of them",
+      "Stance should match the Performance trend",
+      "The brief must not invent prices, headlines, or statement figures",
+    ],
+    labels: [
+      { name: "BULLISH / BEARISH / NEUTRAL", tip: "Stance taken from the Performance trend." },
+      { name: "High / Medium / Low", tip: "Confidence tied to forecast trust for this run." },
+    ],
+    tags: ["BULLISH", "BEARISH", "NEUTRAL", "High", "Medium", "Low"],
+  },
+];
+
+const READ_ORDER = [
+  {
+    title: "Glance at summary chips",
+    body: "Orient with Trend, News, Confidence, Risk, and Projected move. Hover a chip for this run’s explanation.",
+    tips: ["Spot Low confidence or Elevated risk early", "Projected move is path stretch, not a promise"],
+  },
+  {
+    title: "Open the forecast chart",
+    body: "Solid closes, dashed forecast. Use range pills, then Reset if you wander.",
+    tips: ["Start with 1Y", "Agents must track this chart"],
+  },
+  {
+    title: "Performance analyst",
+    body: "Path interpretation and caveats only. Confirm the trend label against the chart before trusting tone.",
+    tips: ["Caveats first", "Then open Market expert"],
+  },
+  {
+    title: "Market expert + Sources",
+    body: "Read tone, then open Sources. UNAVAILABLE means the desk refused to invent news.",
+    tips: ["Check key claims against Sources", "Disagreement with the path is useful"],
+  },
+  {
+    title: "Financial analyst",
+    body: "Balance-sheet / profitability health. Match magnitude claims to the note itself.",
+    tips: ["Fundamentals move slower than headlines", "Stressed vs calm path is a dig-deeper signal"],
+  },
+  {
+    title: "Risk analyst",
+    body: "How fragile the packet looks. Elevated risk with a bullish path is a caution, not a contradiction error.",
+    tips: ["Pair with the other notes", "Contained is not a guarantee of calm"],
+  },
+  {
+    title: "Research brief",
+    body: "Stitched memo with locked Stance and Confidence. Read after the four specialist notes.",
+    tips: ["If Stance looks off, trust the chart and specialist labels", "No buy/sell advice"],
+  },
+  {
+    title: "Check agreement vs clash",
+    body: "Ask whether trend, news, health, and risk agree. Disagreement is often the interesting part.",
+    tips: ["Calm path + elevated risk is a different story", "Write down where views diverge"],
+  },
+  {
+    title: "Treat caution flags carefully",
+    body: "Low confidence, UNAVAILABLE labels, Elevated risk, or thin notes are caution — not buy/sell instructions.",
+    tips: ["Research support only", "Refresh analysis when you want a fresh pass"],
+  },
+];
 
 function emptyDeskStore() {
   return { order: [], byTicker: {} };
@@ -186,8 +309,9 @@ function filterHistoryByRange(history, rangeKey) {
 
 function setAgentTab(key) {
   activeAgentTab = key;
-  document.querySelectorAll(".agent-tab").forEach((btn) => {
+  document.querySelectorAll("[data-agent-tab]").forEach((btn) => {
     const on = btn.dataset.agentTab === key;
+    btn.classList.toggle("on", on);
     btn.classList.toggle("active", on);
     btn.setAttribute("aria-selected", on ? "true" : "false");
   });
@@ -195,6 +319,195 @@ function setAgentTab(key) {
     panel.classList.toggle("hidden", panel.dataset.agentPanel !== key);
   });
 }
+
+function syncViewTabs(view) {
+  document.querySelectorAll(".view-tab").forEach((btn) => {
+    const on = btn.dataset.view === view;
+    btn.classList.toggle("active", on);
+  });
+  const nav = $("navResults");
+  if (nav) {
+    const canOpen =
+      sessionRunCount() > 0 ||
+      !!lastAnalyzePayload ||
+      analyzeInFlight ||
+      view === "results";
+    nav.disabled = !canOpen;
+  }
+}
+
+function showView(view, { preserveTicker = false, ticker = null } = {}) {
+  activeView = view;
+  ["home", "lab", "results"].forEach((id) => {
+    const el = $(id);
+    if (!el) return;
+    el.classList.toggle("hidden", id !== view);
+  });
+  syncViewTabs(view);
+
+  if (view === "home") {
+    $("errorBanner").classList.add("hidden");
+    if (!analyzeInFlight) {
+      $("runBanner").classList.add("hidden");
+      $("loadingPanel").classList.add("hidden");
+    }
+    if (!preserveTicker && !analyzeInFlight) {
+      $("tickerInput").value = "";
+    }
+    document.title = analyzeInFlight
+      ? `Running · ${$("tickerInput").value || window._lastAnalyzeTicker || "…"} | Stock Intelligence`
+      : "Stock Intelligence";
+    updateSessionResultsChrome(window._lastAnalyzeTicker);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    renderHomeDemoChart();
+    return;
+  }
+
+  if (view === "lab") {
+    $("sessionResultsBar").classList.add("hidden");
+    document.title = "Lab | Stock Intelligence";
+    updateSessionResultsChrome(window._lastAnalyzeTicker);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    return;
+  }
+
+  const symbol = ticker || window._lastAnalyzeTicker || "—";
+  $("sessionResultsBar").classList.add("hidden");
+  if (!analyzeInFlight) {
+    $("loadingPanel").classList.add("hidden");
+    $("runBanner").classList.add("hidden");
+  }
+  $("resultsTicker").textContent = symbol;
+  document.title = analyzeInFlight && runningTicker
+    ? `Running · ${runningTicker} · viewing ${symbol} | Stock Intelligence`
+    : `${symbol} | Stock Intelligence`;
+  updateSessionResultsChrome(symbol);
+  if (window._lastSeries) {
+    renderForecastChart(
+      window._lastSeries.history,
+      window._lastSeries.forecast,
+      chartRange
+    );
+  }
+  const top = $("resultsTop");
+  if (top) top.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function showHome({ preserveTicker = false } = {}) {
+  showView("home", { preserveTicker });
+}
+
+function showResults(ticker) {
+  showView("results", { ticker });
+}
+
+function openLabForecast() {
+  showView("lab");
+  const lab = $("forecastLab");
+  const body = $("forecastLabBody");
+  const toggle = $("forecastLabToggle");
+  if (body && body.classList.contains("hidden")) {
+    body.classList.remove("hidden");
+    toggle?.setAttribute("aria-expanded", "true");
+    lab?.classList.add("open");
+  }
+  $("specList")?.querySelectorAll(".lab-agent").forEach((el) => el.classList.remove("open"));
+  lab?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function openLabAgent(index) {
+  showView("lab");
+  const i = Number(index);
+  const specs = $("specList");
+  if (!specs) return;
+  const cards = specs.querySelectorAll(".lab-agent");
+  cards.forEach((el) => el.classList.remove("open"));
+  const card = cards[i];
+  if (card) {
+    card.classList.add("open");
+    card.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+function setReadOrder(index) {
+  const i = Number(index);
+  document.querySelectorAll(".ro-step").forEach((btn) => {
+    btn.classList.toggle("on", Number(btn.dataset.ro) === i);
+  });
+  const r = READ_ORDER[i];
+  const host = $("readOrderDetail");
+  if (!r || !host) return;
+  host.innerHTML = `
+    <p class="home-kicker">Step ${i + 1} of 9</p>
+    <h3>${r.title}</h3>
+    <p>${r.body}</p>
+    <div class="lab-cols" style="grid-template-columns:1fr;margin-top:12px">
+      <div class="lab-col"><h4>Tips</h4><ul>${r.tips.map((t) => `<li>${t}</li>`).join("")}</ul></div>
+    </div>
+  `;
+}
+
+function buildLab() {
+  const toggle = $("forecastLabToggle");
+  const body = $("forecastLabBody");
+  if (toggle && body) {
+    toggle.addEventListener("click", () => {
+      const open = !body.classList.contains("hidden");
+      body.classList.toggle("hidden", open);
+      toggle.setAttribute("aria-expanded", open ? "false" : "true");
+      $("forecastLab")?.classList.toggle("open", !open);
+    });
+  }
+
+  const specs = $("specList");
+  if (specs) {
+    specs.innerHTML = "";
+    SPECS.forEach((s) => {
+      const art = document.createElement("article");
+      art.className = "lab-agent";
+      art.innerHTML = `
+        <button type="button" class="lab-agent-h">
+          <span class="badge">${s.code}</span>
+          <span>
+            <strong>${s.name}</strong>
+            <em>${s.one}</em>
+          </span>
+          <span class="chev">▾</span>
+        </button>
+        <div class="lab-agent-preview">
+          <p>${s.role}</p>
+          <div class="lab-agent-tags">${s.tags.map((t) => `<span class="tag">${t}</span>`).join("")}</div>
+        </div>
+        <div class="lab-agent-b">
+          <div class="mini-grid">
+            <div class="mini"><h5>Reads</h5><p>${s.reads}</p></div>
+            <div class="mini"><h5>Writes</h5><p>${s.writes}</p></div>
+          </div>
+          <div class="mini" style="margin-bottom:8px"><h5>How to use</h5><ul style="margin:0;padding-left:1.05rem">${s.how.map((h) => `<li>${h}</li>`).join("")}</ul></div>
+          <div class="lab-labels">${(s.labels || [])
+            .map((l) => `<div class="lab-label"><b>${l.name}</b><span>${l.tip}</span></div>`)
+            .join("")}</div>
+        </div>`;
+      art.querySelector(".lab-agent-h").addEventListener("click", () => {
+        const open = art.classList.contains("open");
+        specs.querySelectorAll(".lab-agent").forEach((el) => el.classList.remove("open"));
+        if (!open) art.classList.add("open");
+      });
+      specs.appendChild(art);
+    });
+  }
+
+  const order = $("readOrder");
+  if (order) {
+    order.addEventListener("click", (e) => {
+      const btn = e.target.closest(".ro-step");
+      if (!btn) return;
+      setReadOrder(Number(btn.dataset.ro));
+    });
+    setReadOrder(0);
+  }
+}
+
 
 function renderCompany(company) {
   const panel = $("companyPanel");
@@ -229,8 +542,19 @@ function setLoadingStep(index) {
   document.querySelectorAll("#loadingSteps li").forEach((el) => {
     const step = Number(el.dataset.loadStep);
     el.classList.toggle("active", step === index);
+    el.classList.toggle("on", step === index);
     el.classList.toggle("done", step < index);
   });
+}
+
+function syncRunOffset() {
+  const panel = $("loadingPanel");
+  if (!panel || panel.classList.contains("hidden")) {
+    document.documentElement.style.removeProperty("--run-offset");
+    return;
+  }
+  const h = Math.ceil(panel.getBoundingClientRect().height);
+  document.documentElement.style.setProperty("--run-offset", `${h}px`);
 }
 
 function startLoadingUI(ticker) {
@@ -240,21 +564,22 @@ function startLoadingUI(ticker) {
   panel.setAttribute("aria-busy", "true");
   $("loadingTitle").textContent = `Analyzing ${ticker}`;
   $("loadingSub").textContent = sessionRunCount()
-    ? "Still running — keep reading ready tickers on your desk while you wait."
-    : "Forecast, then the three specialists. You can keep browsing this page.";
-  $("analyzeBtn").textContent = "Running…";
+    ? "Prior report stays readable below"
+    : "Path → five agents";
+  requestAnimationFrame(() => syncRunOffset());
+  $("analyzeBtn").textContent = "…";
   $("analyzeBtn").disabled = true;
   let step = 0;
   setLoadingStep(0);
   if (loadStepTimer) clearInterval(loadStepTimer);
   loadStepTimer = setInterval(() => {
-    step = Math.min(step + 1, 3);
+    step = Math.min(step + 1, 5);
     setLoadingStep(step);
-    if (step >= 3 && loadStepTimer) {
+    if (step >= 5 && loadStepTimer) {
       clearInterval(loadStepTimer);
       loadStepTimer = null;
     }
-  }, 12000);
+  }, 8000);
 }
 
 function keepPriorResultsOpenDuringRun(nextTicker) {
@@ -267,30 +592,22 @@ function keepPriorResultsOpenDuringRun(nextTicker) {
     sessionStore.order[0];
   const payload = getSessionRun(prefer);
   if (!payload) return false;
-  // Restore/keep the prior packet so the sidebar stays usable during the wait.
   renderResults(payload);
   return true;
 }
 
 function completeLoadingUI(ticker) {
-  if (loadStepTimer) {
-    clearInterval(loadStepTimer);
-    loadStepTimer = null;
-  }
-  document.body.classList.remove("is-running");
-  $("loadingPanel").classList.add("hidden");
-  $("loadingPanel").classList.remove("is-complete");
-  $("loadingPanel").setAttribute("aria-busy", "false");
-  $("analyzeBtn").textContent = "Run agents";
-  $("analyzeBtn").disabled = false;
+  stopLoadingUI({ hide: true });
   void ticker;
 }
 
 function stopLoadingUI({ hide = true } = {}) {
   document.body.classList.remove("is-running");
+  document.documentElement.style.removeProperty("--run-offset");
   if (hide) {
     $("loadingPanel").classList.add("hidden");
     $("loadingPanel").classList.remove("is-complete");
+    $("loadingPanel").setAttribute("aria-busy", "false");
   }
   $("analyzeBtn").textContent = "Run agents";
   if (!analyzeInFlight) {
@@ -308,8 +625,8 @@ function $(id) {
 
 function toneClass(label) {
   const value = String(label || "").toUpperCase();
-  if (["BULLISH", "POSITIVE", "STRONG"].includes(value)) return "positive";
-  if (["BEARISH", "NEGATIVE", "STRESSED"].includes(value)) return "negative";
+  if (["BULLISH", "POSITIVE", "STRONG", "CONTAINED"].includes(value)) return "positive";
+  if (["BEARISH", "NEGATIVE", "STRESSED", "ELEVATED"].includes(value)) return "negative";
   return "";
 }
 
@@ -441,50 +758,11 @@ function updateSessionResultsChrome(ticker) {
   } else {
     bar.classList.add("hidden");
   }
-}
 
-function showHome({ preserveTicker = false } = {}) {
-  $("home").classList.remove("hidden");
-  $("results").classList.add("hidden");
-  $("errorBanner").classList.add("hidden");
-  if (!analyzeInFlight) {
-    $("runBanner").classList.add("hidden");
-    $("loadingPanel").classList.add("hidden");
+  const nav = $("navResults");
+  if (nav) {
+    nav.disabled = !(count || running || onResults || lastAnalyzePayload);
   }
-  if (!preserveTicker && !analyzeInFlight) {
-    $("tickerInput").value = "";
-  }
-  document.title = analyzeInFlight
-    ? `Running · ${$("tickerInput").value || window._lastAnalyzeTicker || "…"} | Stock Intelligence`
-    : "Stock Intelligence";
-  updateSessionResultsChrome(window._lastAnalyzeTicker);
-  window.scrollTo({ top: 0, behavior: "smooth" });
-  renderHomeDemoChart();
-}
-
-function showResults(ticker) {
-  const symbol = ticker || window._lastAnalyzeTicker || "—";
-  $("home").classList.add("hidden");
-  $("sessionResultsBar").classList.add("hidden");
-  // Keep the sticky loading strip / run banner up while the next ticker executes.
-  if (!analyzeInFlight) {
-    $("loadingPanel").classList.add("hidden");
-    $("runBanner").classList.add("hidden");
-  }
-  $("results").classList.remove("hidden");
-  $("resultsTicker").textContent = symbol;
-  document.title = analyzeInFlight && runningTicker
-    ? `Running · ${runningTicker} · viewing ${symbol} | Stock Intelligence`
-    : `${symbol} | Stock Intelligence`;
-  updateSessionResultsChrome(symbol);
-  if (window._lastSeries) {
-    renderForecastChart(
-      window._lastSeries.history,
-      window._lastSeries.forecast,
-      chartRange
-    );
-  }
-  $("resultsTop").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function renderHomeDemoChart() {
@@ -671,6 +949,7 @@ function flushParagraph(target, lines) {
 function flushList(target, items) {
   if (!items.length) return;
   const list = document.createElement("ul");
+  list.className = "agent-bullet-list";
   for (const itemText of items) {
     const item = document.createElement("li");
     item.textContent = itemText;
@@ -679,23 +958,100 @@ function flushList(target, items) {
   target.appendChild(list);
 }
 
-function openSection(container, title, variant) {
+const BRIEF_SECTION_ICONS = {
+  "is-analysis": "◆",
+  "is-exec": "◎",
+  "is-forecast": "↗",
+  "is-news": "◈",
+  "is-fundamentals": "▣",
+  "is-risk": "⚠",
+  "is-bull": "▲",
+  "is-bear": "▼",
+  "is-drivers": "✦",
+  "is-risks": "⚠",
+  "is-caveats": "ℹ",
+  "is-points": "▸",
+  "is-headlines": "◈",
+  "is-caveat": "ℹ",
+};
+
+const LIST_SECTIONS = new Set([
+  "bull case",
+  "bear case",
+  "key drivers",
+  "key risks",
+  "strengths",
+  "weaknesses",
+  "key points",
+  "drivers",
+  "headlines",
+  "implications",
+  "themes",
+  "caveats",
+  "caveat",
+]);
+
+function openSection(container, title, variant, { open = false } = {}) {
   const card = document.createElement("div");
-  card.className = `agent-section${variant ? ` ${variant}` : ""}`;
-  const heading = document.createElement("h3");
-  heading.textContent = title;
-  card.appendChild(heading);
+  card.className = `agent-section${variant ? ` ${variant}` : ""}${open ? " is-open" : ""}`;
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "agent-section-toggle";
+  const icon = BRIEF_SECTION_ICONS[variant] || "▸";
+  toggle.innerHTML = `<span class="sec-label"><i class="sec-ico" aria-hidden="true">${icon}</i>${title}</span><span class="sec-chev">▾</span>`;
+  toggle.addEventListener("click", () => card.classList.toggle("is-open"));
   const body = document.createElement("div");
   body.className = "agent-section-body";
+  card.appendChild(toggle);
   card.appendChild(body);
   container.appendChild(card);
   return body;
 }
 
-function renderProse(container, text) {
+function normalizeAgentProse(text) {
+  return String(text || "")
+    .replace(/\r\n/g, "\n")
+    .replace(
+      /\s*(Executive summary|Forecast\s*\/\s*performance|Forecast|News|Fundamentals|Risk|Bull case|Bear case|Key drivers|Key risks|Caveats?|Analysis|Key points|Themes|Drivers|Headlines|Implications|Strengths|Weaknesses)\s*:/gi,
+      "\n$1:\n"
+    )
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function sectionVariant(key) {
+  const map = {
+    overview: "is-analysis",
+    analysis: "is-analysis",
+    "executive summary": "is-exec",
+    forecast: "is-forecast",
+    "forecast / performance": "is-forecast",
+    "forecast/performance": "is-forecast",
+    news: "is-news",
+    fundamentals: "is-fundamentals",
+    risk: "is-risk",
+    "bull case": "is-bull",
+    "bear case": "is-bear",
+    "key drivers": "is-drivers",
+    drivers: "is-drivers",
+    "key risks": "is-risks",
+    caveats: "is-caveats",
+    caveat: "is-caveats",
+    strengths: "is-bull",
+    weaknesses: "is-bear",
+    "key points": "is-points",
+    themes: "is-points",
+    headlines: "is-headlines",
+    implications: "is-points",
+  };
+  return map[key] || "";
+}
+
+function renderProse(container, text, { preferList = false } = {}) {
   container.innerHTML = "";
-  const lines = String(text || "").split(/\r?\n/);
-  if (!lines.some((line) => line.trim())) {
+  const normalized = normalizeAgentProse(text);
+  const lines = normalized.split("\n");
+  if (!lines.some((l) => l.trim())) {
     const empty = document.createElement("p");
     empty.className = "muted";
     empty.textContent = "No analysis returned.";
@@ -704,7 +1060,7 @@ function renderProse(container, text) {
   }
 
   const sectionRe =
-    /^(Analysis|Key points|Themes|Caveats?|Drivers|Headlines|Implications|Strengths|Weaknesses)\s*:\s*(.*)$/i;
+    /^(Analysis|Key points|Themes|Caveats?|Drivers|Headlines|Implications|Strengths|Weaknesses|Executive summary|Forecast\s*\/\s*performance|Forecast|News|Fundamentals|Risk|Bull case|Bear case|Key drivers|Key risks)\s*:\s*(.*)$/i;
   const titles = {
     analysis: "Analysis",
     "key points": "Key points",
@@ -716,26 +1072,34 @@ function renderProse(container, text) {
     weaknesses: "Weaknesses",
     caveat: "Caveats",
     caveats: "Caveats",
-  };
-  const variants = {
-    analysis: "is-analysis",
-    "key points": "is-points",
-    themes: "is-points",
-    drivers: "is-points",
-    headlines: "is-headlines",
-    implications: "is-points",
-    strengths: "is-points",
-    weaknesses: "is-points",
-    caveat: "is-caveat",
-    caveats: "is-caveat",
+    "executive summary": "Executive summary",
+    forecast: "Forecast / performance",
+    "forecast / performance": "Forecast / performance",
+    news: "News",
+    fundamentals: "Fundamentals",
+    risk: "Risk",
+    "bull case": "Bull case",
+    "bear case": "Bear case",
+    "key drivers": "Key drivers",
+    "key risks": "Key risks",
   };
 
-  let sectionBody = openSection(container, "Overview", "is-analysis");
+  let currentKey = "overview";
+  let listMode = preferList || LIST_SECTIONS.has(currentKey);
+  let sectionBody = openSection(container, "Overview", "is-analysis", { open: true });
   let paraBuf = [];
   let listBuf = [];
   let openedNamed = false;
+  let sectionIndex = 0;
 
   const flush = () => {
+    if (listMode) {
+      const extras = paraBuf.map((p) => p.trim()).filter(Boolean);
+      flushList(sectionBody, [...listBuf, ...extras]);
+      listBuf = [];
+      paraBuf = [];
+      return;
+    }
     flushList(sectionBody, listBuf);
     listBuf = [];
     flushParagraph(sectionBody, paraBuf);
@@ -743,8 +1107,7 @@ function renderProse(container, text) {
   };
 
   for (const raw of lines) {
-    const line = raw.trimEnd();
-    const trimmed = line.trim();
+    const trimmed = raw.trim();
     if (!trimmed) {
       flush();
       continue;
@@ -752,16 +1115,25 @@ function renderProse(container, text) {
     const section = trimmed.match(sectionRe);
     if (section) {
       flush();
-      const key = section[1].toLowerCase();
-      if (!openedNamed && sectionBody.childNodes.length === 0) {
-        container.innerHTML = "";
-      }
+      const key = section[1].toLowerCase().replace(/\s+/g, " ").trim();
+      if (!openedNamed && sectionBody.childNodes.length === 0) container.innerHTML = "";
       openedNamed = true;
-      sectionBody = openSection(container, titles[key] || section[1], variants[key] || "");
+      sectionIndex += 1;
+      currentKey = key;
+      listMode = LIST_SECTIONS.has(key) || preferList;
+      const openDefault = sectionIndex === 1 || key === "executive summary";
+      sectionBody = openSection(
+        container,
+        titles[key] || section[1],
+        sectionVariant(key),
+        { open: openDefault }
+      );
       const rest = (section[2] || "").trim();
       if (rest) {
         if (/^[-*•]\s*/.test(rest)) {
           listBuf.push(rest.replace(/^[-*•]\s*/, ""));
+        } else if (listMode) {
+          listBuf.push(rest);
         } else {
           paraBuf.push(rest);
         }
@@ -774,30 +1146,39 @@ function renderProse(container, text) {
       listBuf.push(trimmed.replace(/^[-*•]\s+/, ""));
       continue;
     }
+    if (listMode) {
+      listBuf.push(trimmed);
+      continue;
+    }
     flushList(sectionBody, listBuf);
     listBuf = [];
     paraBuf.push(trimmed);
   }
   flush();
-  if (!openedNamed && sectionBody.childNodes.length === 0) {
-    container.innerHTML = "";
-    const empty = document.createElement("p");
-    empty.className = "muted";
-    empty.textContent = "No analysis returned.";
-    container.appendChild(empty);
-  }
 }
 
 function renderAgentCard(prefix, text) {
   const chips = $(`${prefix}Chips`);
   chips.innerHTML = "";
   const primary =
-    prefix === "agent1" ? "Trend" : prefix === "agent2" ? "Sentiment" : "Health";
+    prefix === "agent1"
+      ? "Trend"
+      : prefix === "agent2"
+        ? "Sentiment"
+        : prefix === "agent4"
+          ? "Risk"
+          : prefix === "agent5"
+            ? "Stance"
+            : "Health";
   const primaryValue = stripLabeledHeader(text, primary) || "—";
+  const shortLabel = primaryValue.split("\n")[0];
   const chip = document.createElement("span");
   chip.className = `agent-chip ${toneClass(primaryValue)}`;
-  chip.textContent = primaryValue.split("\n")[0];
+  chip.textContent = shortLabel;
   chips.appendChild(chip);
+
+  const preview = $(`${prefix}ChipPreview`);
+  if (preview) preview.textContent = shortLabel;
 
   if (prefix === "agent1") {
     const range = stripLabeledHeader(text, "Range");
@@ -809,7 +1190,25 @@ function renderAgentCard(prefix, text) {
     }
   }
 
-  const prose = proseFromAgentText(text, ["Trend", "Range", "Sentiment", "Health"]);
+  if (prefix === "agent5") {
+    const conf = stripLabeledHeader(text, "Confidence");
+    if (conf) {
+      const confChip = document.createElement("span");
+      confChip.className = "agent-chip neutral";
+      confChip.textContent = `Confidence ${conf.split("\n")[0]}`;
+      chips.appendChild(confChip);
+    }
+  }
+
+  const prose = proseFromAgentText(text, [
+    "Trend",
+    "Range",
+    "Sentiment",
+    "Health",
+    "Risk",
+    "Stance",
+    "Confidence",
+  ]);
   renderProse($(`${prefix}Body`), prose || text || "");
 }
 
@@ -830,15 +1229,21 @@ function renderResults(data) {
 
   const trend = data.performance_trend || data.recommendation || "—";
   const news = data.news_sentiment || "—";
+  const risk = data.risk_level || "—";
 
   const trendEl = $("metricTrend");
   const newsEl = $("metricNews");
   const moveEl = $("metricMove");
+  const riskEl = $("metricRisk");
   trendEl.textContent = String(trend).toUpperCase();
   newsEl.textContent = String(news).toUpperCase();
   trendEl.className = `metric-value ${toneClass(trend)}`;
   newsEl.className = `metric-value ${toneClass(news)}`;
   $("metricConfidence").textContent = data.confidence || "—";
+  if (riskEl) {
+    riskEl.textContent = String(risk).toUpperCase();
+    riskEl.className = `metric-value ${toneClass(risk)}`;
+  }
   moveEl.textContent = signedMove;
   moveEl.className = `metric-value ${
     signedMove.startsWith("+") && signedMove !== "+0.00%"
@@ -854,12 +1259,14 @@ function renderResults(data) {
       trend: String(trend).toUpperCase(),
       news: String(news).toUpperCase(),
       confidence: data.confidence || "—",
+      risk: String(risk).toUpperCase(),
       projected_move: signedMove,
     },
     tones: {
       trend: toneClass(trend),
       news: toneClass(news),
       confidence: "",
+      risk: toneClass(risk),
       projected_move: moveEl.className.replace("metric-value", "").trim(),
     },
   });
@@ -881,6 +1288,8 @@ function renderResults(data) {
   renderAgentCard("agent1", data.performance_analysis || "");
   renderAgentCard("agent2", data.news_summary || "");
   renderAgentCard("agent3", data.financial_analysis || "");
+  renderAgentCard("agent4", data.risk_analysis || "");
+  renderAgentCard("agent5", data.final_report || data.draft_report || "");
   setAgentTab("a1");
 
   const newsPayload = data.news || {};
@@ -998,9 +1407,8 @@ function markResultsReady(ticker) {
 async function analyze(ticker, { forceRefresh = false } = {}) {
   if (analyzeInFlight) {
     $("runBanner").classList.remove("hidden");
-    $("runBanner").className = "run-banner running";
-    $("runBanner").textContent =
-      `Already analyzing ${runningTicker || $("tickerInput").value || "a ticker"}… use On your desk to review ready tickers while you wait.`;
+    $("runBanner").className = "run-toast running";
+    $("runBanner").textContent = `Already on ${runningTicker || "a symbol"}…`;
     return;
   }
 
@@ -1008,24 +1416,24 @@ async function analyze(ticker, { forceRefresh = false } = {}) {
   runningTicker = ticker;
   $("errorBanner").classList.add("hidden");
   $("runBanner").classList.remove("hidden");
-  $("runBanner").className = "run-banner running";
-  const hasPrior = sessionRunCount() > 0;
+  $("runBanner").className = "run-toast running";
   $("runBanner").textContent = forceRefresh
-    ? `Refreshing ${ticker}… starting a brand-new analysis.`
-    : hasPrior
-      ? `Running ${ticker}… prior results stay open — compare from On your desk while this finishes.`
-      : `Running ${ticker}… you can keep browsing this page. Results appear when ready.`;
+    ? `Fresh run ${ticker}…`
+    : `Running ${ticker}…`;
   document.title = `Running · ${ticker} | Stock Intelligence`;
 
-  // With prior runs: keep results + sidebar so wait time is usable for comparison.
-  // First run in the sitting: stay on home under the loading strip.
-  if (hasPrior) {
+  if (sessionRunCount() > 0) {
     keepPriorResultsOpenDuringRun(ticker);
   } else {
-    $("home").classList.remove("hidden");
-    $("results").classList.add("hidden");
+    showView("home", { preserveTicker: true });
   }
   startLoadingUI(ticker);
+  // Loader strip carries status; toast is a brief ack then clears.
+  window.setTimeout(() => {
+    if (analyzeInFlight && runningTicker === ticker) {
+      $("runBanner").classList.add("hidden");
+    }
+  }, 1800);
   updateSessionResultsChrome(window._lastAnalyzeTicker);
 
   const controller = new AbortController();
@@ -1061,6 +1469,7 @@ async function analyze(ticker, { forceRefresh = false } = {}) {
     stopLoadingUI({ hide: true });
     completeLoadingUI(ticker);
     renderResults(payload);
+    $("runBanner").classList.add("hidden");
   } catch (error) {
     runningTicker = null;
     analyzeInFlight = false;
@@ -1081,10 +1490,11 @@ async function analyze(ticker, { forceRefresh = false } = {}) {
       renderHomeDemoChart();
     }
     $("runBanner").classList.add("hidden");
+    $("errorBanner").className = "run-toast bad";
     $("errorBanner").classList.remove("hidden");
     $("errorBanner").textContent =
       error.name === "AbortError"
-        ? "Timed out waiting for analysis. Try again."
+        ? "Timed out."
         : String(error.message || error);
     document.title = window._lastAnalyzeTicker
       ? `${window._lastAnalyzeTicker} | Stock Intelligence`
@@ -1098,31 +1508,52 @@ async function analyze(ticker, { forceRefresh = false } = {}) {
   }
 }
 
-function setPipelineStep(index) {
-  document.querySelectorAll(".flow-step").forEach((el) => {
-    const on = Number(el.dataset.step) === index;
-    el.classList.toggle("active", on);
-    el.setAttribute("aria-selected", on ? "true" : "false");
-  });
-  const item = PIPE_COPY[index];
-  $("pipelineDetail").innerHTML = `<strong>${item.title}</strong>${item.body}`;
-}
-
 function wireHome() {
-  setPipelineStep(0);
+  buildLab();
 
-  document.querySelectorAll(".flow-step").forEach((el) => {
-    el.addEventListener("click", () => setPipelineStep(Number(el.dataset.step)));
+  document.querySelectorAll(".view-tab[data-view]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (btn.disabled) return;
+      const view = btn.dataset.view;
+      if (view === "results") {
+        showResults(window._lastAnalyzeTicker || sessionStore.order[0]);
+        return;
+      }
+      showView(view, { preserveTicker: true });
+    });
   });
 
-  $("quickTickers").addEventListener("click", (event) => {
+  document.querySelectorAll("[data-view='lab']").forEach((btn) => {
+    if (btn.classList.contains("view-tab")) return;
+    btn.addEventListener("click", () => showView("lab"));
+  });
+
+  document.querySelectorAll("[data-focus-search]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      showView("home", { preserveTicker: true });
+      $("tickerInput")?.focus();
+    });
+  });
+
+  $("homeFlow")?.addEventListener("click", (event) => {
+    const node = event.target.closest("[data-lab-forecast],[data-lab-agent]");
+    if (!node) return;
+    if (node.hasAttribute("data-lab-forecast")) {
+      openLabForecast();
+      return;
+    }
+    if (node.dataset.labAgent != null) {
+      openLabAgent(node.dataset.labAgent);
+    }
+  });
+
+  $("quickTickers")?.addEventListener("click", (event) => {
     const btn = event.target.closest("button[data-ticker]");
     if (!btn) return;
     if (analyzeInFlight) {
       $("runBanner").classList.remove("hidden");
-      $("runBanner").className = "run-banner running";
-      $("runBanner").textContent =
-        `Already analyzing ${runningTicker || "a ticker"}… open a ready ticker on your desk while you wait.`;
+      $("runBanner").className = "run-toast running";
+      $("runBanner").textContent = `Already on ${runningTicker}…`;
       return;
     }
     const ticker = btn.dataset.ticker;
@@ -1141,7 +1572,7 @@ function wireHome() {
     });
   });
 
-  document.querySelectorAll(".agent-tab").forEach((btn) => {
+  document.querySelectorAll("[data-agent-tab]").forEach((btn) => {
     btn.addEventListener("click", () => setAgentTab(btn.dataset.agentTab));
   });
 }
@@ -1166,6 +1597,7 @@ $("analyzeForm").addEventListener("submit", (event) => {
   event.preventDefault();
   const ticker = normalizeTicker($("tickerInput").value);
   if (!ticker) {
+    $("errorBanner").className = "run-toast bad";
     $("errorBanner").classList.remove("hidden");
     $("errorBanner").textContent = "Enter a valid ticker.";
     return;
@@ -1247,6 +1679,7 @@ if (refreshAnalyzeBtn) {
       window._lastAnalyzeTicker || $("tickerInput").value || $("resultsTicker").textContent
     );
     if (!ticker || ticker === "—") {
+      $("errorBanner").className = "run-toast bad";
       $("errorBanner").classList.remove("hidden");
       $("errorBanner").textContent = "No ticker to refresh.";
       return;
@@ -1260,6 +1693,7 @@ const METRIC_CHIP_LABELS = {
   trend: "Trend",
   news: "News",
   confidence: "Confidence",
+  risk: "Risk",
   projected_move: "Projected move",
 };
 
@@ -1270,6 +1704,8 @@ const METRIC_CHIP_FALLBACKS = {
     "News summarizes the Market Expert’s reading of recent headline tone for this ticker. Coverage can shift quickly and does not replace the forecast path.",
   confidence:
     "Confidence reflects how steady this run’s path reading looked. Lower confidence means treat the chips as a lighter signal and read the agent notes.",
+  risk:
+    "Risk summarizes coded downside and uncertainty for this run — Contained, Moderate, or Elevated — from volatility, drawdown, news, financials, and forecast trust.",
   projected_move:
     "Projected move is the percent change from the last close to the final forecast session. It describes the path stretch, not a promised return.",
 };
@@ -1859,3 +2295,6 @@ function bootCharts() {
   renderHomeDemoChart();
 }
 bootCharts();
+window.addEventListener("resize", () => {
+  if (document.body.classList.contains("is-running")) syncRunOffset();
+});

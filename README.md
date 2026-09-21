@@ -1,10 +1,10 @@
 # Stock Intelligence Platform
 
-An equity research desk: search a ticker, get a short-horizon price forecast, then three specialist notes that interpret tool outputs. The app is research support only — it does not place trades or issue buy/sell recommendations.
+An equity research desk: search a ticker, get a short-horizon price forecast, then specialist notes that interpret tool outputs and a research brief that stitches them. The app is research support only — it does not place trades or issue buy/sell recommendations.
 
-**Live analyze path:** forecast (code) → Performance Analyst → Market Expert → Financial Analyst.
+**Live analyze path:** forecast (code) → Performance Analyst → Market Expert → Financial Analyst → Risk Analyst → Report.
 
-The web UI also includes **Guide** (product help chat) and hover explanations on the summary chips (Trend, News, Confidence, Projected move). Those chip notes are written during the analyze run, not on hover.
+The web UI also includes **Guide** (product help chat) and hover explanations on the summary chips (Trend, News, Confidence, Risk, Projected move). Those chip notes are written during the analyze run, not on hover.
 
 ---
 
@@ -16,7 +16,9 @@ The web UI also includes **Guide** (product help chat) and hover explanations on
 | Performance Analyst | Trend label and note grounded in the forecast path. Trend must match the numbers. |
 | Market Expert | News tone and briefing from recent headlines. Returns `UNAVAILABLE` when nothing useful is found. |
 | Financial Analyst | Fundamentals health, strengths, and weaknesses from a company snapshot. Does not invent statement figures. |
-| Summary chips | Trend, News, Confidence, Projected move — with short explanations available on hover. |
+| Risk Analyst | Contained / Moderate / Elevated downside note from coded volatility, drawdown, news, financials, and forecast trust. |
+| Report / Research brief | Stance-locked synthesis of the four specialist notes (executive summary, bull/bear, drivers, caveats). |
+| Summary chips | Trend, News, Confidence, Risk, Projected move — with short explanations available on hover. |
 | Guide | In-app assistant for how the desk works (agents, labels, UI). Out of scope for ticker picks and trading advice. |
 | On your desk | In-session list of finished tickers for this browser visit (clears on refresh). |
 | Analyze cache | Optional Redis cache for repeated tickers. UI badge + **Refresh analysis** to force a new run. |
@@ -182,7 +184,7 @@ On macOS/Linux use `python scripts/run_analyze_agents.py ...`.
 
 ### `POST /analyze`
 
-Runs forecast + Performance + Market + Financial.
+Runs forecast + Performance + Market + Financial + Risk + Report.
 
 Notable response fields:
 
@@ -192,15 +194,19 @@ Notable response fields:
 - `financial_analysis` / `financial_health` / `financial_guardrail_ok`
 - `financials` — normalized fundamentals snapshot (code, not LLM)
 - `company` — company profile for the results header
-- `metric_explanations` — short blurbs for Trend, News, Confidence, Projected move
-- `recommendation` — `BULLISH` / `BEARISH` / `NEUTRAL` (SIDEWAYS → NEUTRAL)
+- `metric_explanations` — short blurbs for Trend, News, Confidence, Risk, Projected move
+- `final_report` / `draft_report` — synthesis research brief
+- `recommendation` — `BULLISH` / `BEARISH` / `NEUTRAL` (SIDEWAYS → NEUTRAL; locked from Performance trend)
 - `confidence` — `Low` when serving persistence or repaired performance output; otherwise `Medium`
-- `mode` — `performance_news_financial`
+- `report_guardrail_ok` / `report_repaired`
+- `risk_analysis` / `risk_level` / `risk_guardrail_ok`
+- `risk` — coded risk metrics snapshot
+- `mode` — `performance_news_financial_risk_report`
 - `cached` / `cache_age_seconds` / `cache_ttl_seconds`
 
 Request flag: `force_refresh: true` bypasses the analyze cache.
 
-Cache prefix: `analyze-perf-news-fin-v2` (TTL from `ANALYZE_CACHE_TTL_SECONDS`, default 1 hour).
+Cache prefix: `analyze-perf-news-fin-risk-report-v1` (TTL from `ANALYZE_CACHE_TTL_SECONDS`, default 1 hour).
 
 ### `POST /help-chat`
 
@@ -232,6 +238,7 @@ pytest -q
 - Performance: trend label must match the forecast path.
 - Market: drivers must be grounded in fetched headlines.
 - Financial: health label and magnitudes must match the fundamentals facts object.
+- Risk: Contained / Moderate / Elevated must match coded severity; no invented vol/drawdown; no trade advice.
 - Chip explanations are produced once per analyze run by the Performance Analyst module and stored on the response.
 - Chronological train / validation / test splits; scaler fit on train only; price-space metrics with a persistence baseline.
 - Structured JSON logs with request context for local and production runs.

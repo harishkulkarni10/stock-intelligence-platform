@@ -1,4 +1,4 @@
-"""Agent nodes: performance → news → financial → (optional report → critic)."""
+"""Agent nodes: performance → news → financial → risk → report (critic optional)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from src.agents.financial_guardrails import run_financial_harness
 from src.agents.llm import get_chat_llm, message_text
 from src.agents.news_guardrails import run_news_harness
 from src.agents.performance_guardrails import run_performance_harness
+from src.agents.report_guardrails import run_report_harness
+from src.agents.risk_guardrails import run_risk_harness
 from src.agents.state import extract_stance_and_confidence
 from src.agents.tools import (
     format_financials_for_prompt,
@@ -171,46 +173,100 @@ def financial_analyst_node(state: dict) -> dict:
     }
 
 
-def report_generator_node(state: dict) -> dict:
+def risk_analyst_node(state: dict) -> dict:
     ticker = state["ticker"]
-    logger.info("[report] start ticker=%s", ticker)
+    started = time.perf_counter()
+    forecast = state.get("forecast") if isinstance(state.get("forecast"), dict) else None
+    log_event(logger, "agent4_start", step="agent4", status="started")
 
-    prompt = f"""Write a clean Bloomberg-style markdown equity research note for {ticker}.
-
-PERFORMANCE ANALYSIS:
-{state.get("performance_analysis", "")}
-
-NEWS SUMMARY:
-{state.get("news_summary", "")}
-
-FINANCIAL ANALYSIS:
-{state.get("financial_analysis", "")}
-
-FORECAST DATA:
-{state.get("forecast_text", "")}
-
-Rules:
-- Ground price claims in FORECAST DATA only.
-- Use PERFORMANCE, NEWS, and FINANCIAL analyses explicitly.
-- Keep it under 400 words.
-
-End exactly with this line:
-**Market Stance:** BULLISH/BEARISH/NEUTRAL | **Confidence:** High/Medium/Low
-"""
-    response = llm.invoke([SystemMessage(content=prompt)])
-    text = message_text(response)
-    recommendation, confidence = extract_stance_and_confidence(text)
-    logger.info(
-        "[report] done ticker=%s recommendation=%s confidence=%s",
-        ticker,
-        recommendation,
-        confidence,
+    harness = run_risk_harness(
+        ticker=ticker,
+        forecast=forecast,
+        performance_trend=state.get("performance_trend"),
+        performance_repaired=bool(state.get("performance_repaired")),
+        performance_analysis=state.get("performance_analysis"),
+        news_sentiment=state.get("news_sentiment"),
+        news_summary=state.get("news_summary"),
+        financial_health=state.get("financial_health"),
+        financial_analysis=state.get("financial_analysis"),
+        financials=state.get("financials") if isinstance(state.get("financials"), dict) else None,
+        llm=llm,
+    )
+    content = harness["risk_analysis"]
+    log_event(
+        logger,
+        "agent4_done",
+        step="agent4",
+        status="success",
+        duration_ms=(time.perf_counter() - started) * 1000,
+        metrics={
+            "repaired": harness["risk_repaired"],
+            "attempts": len(harness.get("risk_attempts") or []),
+            "guardrail_ok": harness["risk_guardrail_ok"],
+        },
+        data={"risk": harness["risk_level"]},
     )
     return {
-        "messages": [AIMessage(content=text)],
-        "draft_report": text,
-        "recommendation": recommendation,
-        "confidence": confidence,
+        "messages": [AIMessage(content=content)],
+        "risk": harness.get("risk") or {},
+        "risk_analysis": content,
+        "risk_level": harness["risk_level"],
+        "risk_guardrail_ok": harness["risk_guardrail_ok"],
+        "risk_repaired": harness["risk_repaired"],
+    }
+
+
+def report_generator_node(state: dict) -> dict:
+    ticker = state["ticker"]
+    started = time.perf_counter()
+    forecast = state.get("forecast") if isinstance(state.get("forecast"), dict) else None
+    source = str((forecast or {}).get("model_source") or "").lower()
+    repaired = bool(state.get("performance_repaired"))
+    confidence = "Low" if repaired or source == "persistence" else "Medium"
+    log_event(logger, "agent5_start", step="agent5", status="started")
+
+    harness = run_report_harness(
+        ticker=ticker,
+        forecast=forecast,
+        forecast_text=state.get("forecast_text") or "",
+        performance_trend=state.get("performance_trend"),
+        performance_analysis=state.get("performance_analysis") or "",
+        news_sentiment=state.get("news_sentiment"),
+        news_summary=state.get("news_summary") or "",
+        financial_health=state.get("financial_health"),
+        financial_analysis=state.get("financial_analysis") or "",
+        financials=state.get("financials") if isinstance(state.get("financials"), dict) else None,
+        risk_level=state.get("risk_level"),
+        risk_analysis=state.get("risk_analysis") or "",
+        risk=state.get("risk") if isinstance(state.get("risk"), dict) else None,
+        confidence=confidence,
+        llm=llm,
+    )
+    content = harness["final_report"]
+    log_event(
+        logger,
+        "agent5_done",
+        step="agent5",
+        status="success",
+        duration_ms=(time.perf_counter() - started) * 1000,
+        metrics={
+            "repaired": harness["report_repaired"],
+            "attempts": len(harness.get("report_attempts") or []),
+            "guardrail_ok": harness["report_guardrail_ok"],
+        },
+        data={
+            "stance": harness["recommendation"],
+            "confidence": harness["confidence"],
+        },
+    )
+    return {
+        "messages": [AIMessage(content=content)],
+        "draft_report": harness["draft_report"],
+        "final_report": content,
+        "recommendation": harness["recommendation"],
+        "confidence": harness["confidence"],
+        "report_guardrail_ok": harness["report_guardrail_ok"],
+        "report_repaired": harness["report_repaired"],
     }
 
 

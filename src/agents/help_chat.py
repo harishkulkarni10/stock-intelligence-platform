@@ -17,21 +17,25 @@ OUT_OF_SCOPE = (
 )
 
 SAFE_OVERVIEW = """### What this desk is
-Stock Intelligence is an equity research desk. Search a ticker, run analysis, and get one packet: forecast chart, company overview, three specialist notes, and Sources.
+Stock Intelligence is an equity research desk. Search a ticker, run analysis, and get one packet: forecast chart, company overview, four specialist notes, a research brief, and Sources.
 
 ### What a run includes
 - Forecast chart — history plus a short projected path
 - Performance analyst — what the path implies (trend, confidence, caveats)
 - Market expert — news tone grounded in headlines under Sources
 - Financial analyst — fundamentals health, strengths, weaknesses
+- Risk analyst — downside and uncertainty for this run
+- Research brief — stance-locked synthesis of the specialist packet
+- Lab — expandable reference for agents and how to read a run
 - On your desk — reopen finished tickers from this visit only
 
 ### How to use it
-- Compare trend, news, and financials together — disagreement is useful
+- Compare trend, news, financials, and risk together — disagreement is useful
+- Read the research brief after the specialist notes
 - Check important claims against the chart and Sources
 - Research support only — no buy or sell advice
 
-NEXT: How to read a run|Performance analyst|Market expert|Financial analyst"""
+NEXT: How to read a run|Lab|Performance analyst|Market expert|Financial analyst|Risk analyst|Research brief"""
 
 MAX_HISTORY = 6
 
