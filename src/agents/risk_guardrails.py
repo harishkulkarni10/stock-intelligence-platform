@@ -428,17 +428,43 @@ def run_risk_harness(
             )
 
         invoke_started = time.perf_counter()
-        response = call(
-            [
-                SystemMessage(
-                    content=(
-                        "You write compact equity risk notes for a research desk. "
-                        "Stay medium length, never invent metrics, never give trade advice."
-                    )
-                ),
-                HumanMessage(content=prompt),
-            ]
-        )
+        try:
+            response = call(
+                [
+                    SystemMessage(
+                        content=(
+                            "You write compact equity risk notes for a research desk. "
+                            "Stay medium length, never invent metrics, never give trade advice."
+                        )
+                    ),
+                    HumanMessage(content=prompt),
+                ]
+            )
+        except Exception as exc:  # noqa: BLE001 — fall through to repair/fallback
+            invoke_ms = (time.perf_counter() - invoke_started) * 1000
+            log_event(
+                logger,
+                "agent4_llm_error",
+                level=logging.WARNING,
+                step="agent4_llm",
+                status="error",
+                duration_ms=invoke_ms,
+                metrics={"attempt": attempt},
+                data={"error": str(exc)[:320]},
+            )
+            text = ""
+            result = RiskGuardrailResult(
+                ok=False, parsed_risk=None, errors=("llm_error",)
+            )
+            attempts.append(
+                {
+                    "attempt": attempt,
+                    "ok": False,
+                    "errors": ["llm_error"],
+                    "duration_ms": round(invoke_ms, 2),
+                }
+            )
+            continue
         invoke_ms = (time.perf_counter() - invoke_started) * 1000
         text = message_text(response)
         result = validate_risk_analysis(text, facts)

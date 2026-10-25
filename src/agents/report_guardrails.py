@@ -606,17 +606,49 @@ def run_report_harness(
             )
 
         invoke_started = time.perf_counter()
-        response = call(
-            [
-                SystemMessage(
-                    content=(
-                        "You write compact equity research briefs that synthesize "
-                        "specialist notes. Never invent numbers or give trade advice."
-                    )
-                ),
-                HumanMessage(content=prompt),
-            ]
-        )
+        try:
+            response = call(
+                [
+                    SystemMessage(
+                        content=(
+                            "You write compact equity research briefs that synthesize "
+                            "specialist notes. Never invent numbers or give trade advice."
+                        )
+                    ),
+                    HumanMessage(content=prompt),
+                ]
+            )
+        except Exception as exc:  # noqa: BLE001 — fall through to repair/fallback
+            invoke_ms = (time.perf_counter() - invoke_started) * 1000
+            log_event(
+                logger,
+                "agent5_llm_error",
+                level=logging.WARNING,
+                step="agent5_llm",
+                status="error",
+                duration_ms=invoke_ms,
+                metrics={"attempt": attempt},
+                data={"error": str(exc)[:320]},
+            )
+            text = ""
+            result = ReportGuardrailResult(
+                ok=False,
+                parsed_stance=None,
+                parsed_confidence=None,
+                errors=("llm_error",),
+            )
+            attempts.append(
+                {
+                    "attempt": attempt,
+                    "ok": False,
+                    "errors": ["llm_error"],
+                    "parsed_stance": None,
+                    "parsed_confidence": None,
+                    "chars": 0,
+                    "duration_ms": round(invoke_ms, 2),
+                }
+            )
+            continue
         invoke_ms = (time.perf_counter() - invoke_started) * 1000
         text = message_text(response)
         result = validate_report(text, facts)

@@ -1,4 +1,4 @@
-# DESIGN.md
+# [DESIGN.md](http://DESIGN.md)
 
 # Stock Intelligence Platform
 
@@ -39,6 +39,8 @@
 
 ---
 
+
+
 # 1. Vision
 
 Build a production-grade AI Equity Research Platform capable of combining quantitative forecasting with qualitative reasoning to generate institutional-quality stock research reports.
@@ -48,6 +50,8 @@ This project is designed to demonstrate modern AI Engineering, Machine Learning 
 This repository is intended to represent how a real engineering team would design, implement and operate an AI-powered financial intelligence platform.
 
 ---
+
+
 
 # 2. Problem Statement
 
@@ -69,6 +73,8 @@ This platform aims to combine them into one integrated system.
 
 ---
 
+
+
 # 3. Product Overview
 
 The platform consists of three intelligence layers:
@@ -85,6 +91,8 @@ Outputs:
 
 ---
 
+
+
 ## Layer 2 — Knowledge Intelligence
 
 Responsible for collecting and retrieving relevant financial knowledge.
@@ -99,6 +107,8 @@ Sources include:
 
 ---
 
+
+
 ## Layer 3 — Reasoning Intelligence
 
 Responsible for interpreting:
@@ -111,6 +121,8 @@ Responsible for interpreting:
 and producing a comprehensive investment report.
 
 ---
+
+
 
 # 4. Goals
 
@@ -131,6 +143,8 @@ Version 1 aims to build:
 
 ---
 
+
+
 # 5. Non Goals
 
 Version 1 will NOT attempt to build:
@@ -147,7 +161,11 @@ These may be explored in later versions.
 
 ---
 
+
+
 # 6. Target Users
+
+
 
 ## Retail Investors
 
@@ -159,6 +177,8 @@ Need:
 
 ---
 
+
+
 ## Financial Analysts
 
 Need:
@@ -168,6 +188,8 @@ Need:
 - Better productivity
 
 ---
+
+
 
 ## Portfolio Managers
 
@@ -179,6 +201,8 @@ Need:
 
 ---
 
+
+
 ## ML Engineers
 
 Need:
@@ -189,6 +213,8 @@ Need:
 - Deployment
 
 ---
+
+
 
 # 7. Functional Requirements
 
@@ -211,6 +237,8 @@ The platform shall:
 
 ---
 
+
+
 # 8. Non Functional Requirements
 
 The platform should be:
@@ -227,6 +255,8 @@ The platform should be:
 - Extensible
 
 ---
+
+
 
 # 9. Product Scope
 
@@ -264,6 +294,8 @@ Deployment
 
 ---
 
+
+
 # 10. High-Level Product Workflow
 
 User
@@ -290,6 +322,8 @@ Investment Report
 
 ---
 
+
+
 # 11. Core Business Workflow
 
 1. User requests stock analysis.
@@ -306,7 +340,11 @@ Investment Report
 
 ---
 
+
+
 # 12. Major System Components
+
+
 
 ## Data Platform
 
@@ -319,6 +357,8 @@ Responsibilities:
 
 ---
 
+
+
 ## Feature Store
 
 Responsibilities:
@@ -328,6 +368,8 @@ Responsibilities:
 - Online features (future)
 
 ---
+
+
 
 ## Forecasting Platform
 
@@ -340,6 +382,8 @@ Responsibilities:
 
 ---
 
+
+
 ## ML Platform
 
 Responsibilities:
@@ -349,6 +393,8 @@ Responsibilities:
 - Versioning
 
 ---
+
+
 
 ## API Platform
 
@@ -362,6 +408,8 @@ Responsibilities:
 
 ---
 
+
+
 ## Retrieval Platform
 
 Responsibilities:
@@ -373,6 +421,8 @@ Responsibilities:
 
 ---
 
+
+
 ## Agent Platform
 
 Responsibilities:
@@ -383,6 +433,8 @@ Responsibilities:
 
 ---
 
+
+
 ## Report Platform
 
 Responsibilities:
@@ -392,6 +444,8 @@ Responsibilities:
 - Summarize evidence
 
 ---
+
+
 
 ## Monitoring Platform
 
@@ -404,6 +458,8 @@ Responsibilities:
 
 ---
 
+
+
 ## Infrastructure Platform
 
 Responsibilities:
@@ -414,6 +470,8 @@ Responsibilities:
 - Secrets management
 
 ---
+
+
 
 # 13. End-to-End Request Lifecycle
 
@@ -497,6 +555,8 @@ User
 
 ---
 
+
+
 # 14. High-Level Architecture
 
 ```
@@ -525,6 +585,8 @@ User
 
 ---
 
+
+
 # 15. Technology Philosophy
 
 Every technology must solve a clearly defined business problem.
@@ -535,7 +597,10 @@ Each component should exist only if it provides measurable engineering value.
 
 ---
 
+
+
 # 16. Technology Stack
+
 
 | Component           | Technology                        |
 | ------------------- | --------------------------------- |
@@ -555,7 +620,10 @@ Each component should exist only if it provides measurable engineering value.
 | Cloud               | AWS                               |
 | CI/CD               | GitHub Actions                    |
 
+
 ---
+
+
 
 # 17. Repository Philosophy
 
@@ -574,6 +642,8 @@ Every subsystem must define:
 before production code is written.
 
 ---
+
+
 
 # 18. Development Philosophy
 
@@ -609,6 +679,8 @@ Each commit should leave the repository in a working state.
 
 ---
 
+
+
 # 19. Testing Strategy
 
 Testing is continuous.
@@ -625,6 +697,8 @@ Includes:
 Testing is never treated as a final project phase.
 
 ---
+
+
 
 # 20. Observability Strategy
 
@@ -647,6 +721,8 @@ Tools:
 
 ---
 
+
+
 # 21. Security Strategy
 
 Version 1 includes:
@@ -661,6 +737,8 @@ Version 1 includes:
 Future versions may introduce OAuth, RBAC and enterprise identity providers.
 
 ---
+
+
 
 # 22. Deployment Philosophy
 
@@ -694,6 +772,8 @@ Infrastructure should remain reproducible and version-controlled.
 
 ---
 
+
+
 # 23. Scalability Strategy
 
 Design principles:
@@ -706,6 +786,8 @@ Design principles:
 - Replaceable infrastructure components
 
 ---
+
+
 
 # 24. Risks & Trade-offs
 
@@ -720,7 +802,11 @@ These decisions will be revisited in future versions.
 
 ---
 
+
+
 # 25. Version 1 Roadmap
+
+
 
 ## Sprint 0
 
@@ -728,47 +814,69 @@ These decisions will be revisited in future versions.
 - Documentation
 - Architecture
 
+
+
 ## Sprint 1
 
 - Data Platform
+
+
 
 ## Sprint 2
 
 - Forecasting Platform
 
+
+
 ## Sprint 3
 
 - ML Platform
+
+
 
 ## Sprint 4
 
 - API Platform
 
+
+
 ## Sprint 5
 
 - Retrieval Platform
+
+
 
 ## Sprint 6
 
 - Agent Platform
 
+
+
 ## Sprint 7
 
 - Report Generation
+
+
 
 ## Sprint 8
 
 - Monitoring
 
+
+
 ## Sprint 9
 
 - Infrastructure
+
+
 
 ## Sprint 10
 
 - Cloud Deployment
 
 ---
+
+
 
 # 26. Future Enhancements
 
@@ -790,29 +898,28 @@ Potential Version 2+ features:
 
 ---
 
+
+
 # Design Principles
 
 This repository follows six guiding principles:
 
 1. **Business before Technology**
-   Every engineering decision must solve a real business problem.
-
+  Every engineering decision must solve a real business problem.
 2. **Design before Implementation**
-   Production code should implement an approved design rather than invent one.
-
+  Production code should implement an approved design rather than invent one.
 3. **Documentation as Code**
-   Documentation evolves alongside implementation and is version-controlled.
-
+  Documentation evolves alongside implementation and is version-controlled.
 4. **Modularity over Monoliths**
-   Services should have clear responsibilities and well-defined interfaces.
-
+  Services should have clear responsibilities and well-defined interfaces.
 5. **Observability by Default**
-   Every major subsystem should be measurable, monitorable and debuggable.
-
+  Every major subsystem should be measurable, monitorable and debuggable.
 6. **Production Mindset from Day One**
-   The platform is built as if it will eventually serve real users, not merely demonstrate concepts.
+  The platform is built as if it will eventually serve real users, not merely demonstrate concepts.
 
 ---
+
+
 
 # Conclusion
 

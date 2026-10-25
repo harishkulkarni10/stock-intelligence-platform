@@ -273,6 +273,95 @@ def test_analyze_stock_force_refresh_skips_cache(monkeypatch):
     assert "Fresh" in (result.get("performance_analysis") or "")
 
 
+def test_analyze_stock_stream_emits_progressive_stages(monkeypatch):
+    from src.agents import graph
+
+    forecast = {
+        "status": "ok",
+        "ticker": "MSFT",
+        "horizon": 5,
+        "model_source": "persistence",
+        "model_version": "persistence",
+        "model_type": "persistence",
+        "last_close": 400.0,
+        "last_date": "2026-08-14",
+        "history": [],
+        "predictions": [{"step": 1, "date": "2026-08-17", "value": 401.0}],
+        "champion": "persistence",
+        "beats_persistence": False,
+    }
+
+    class FakeGraph:
+        def invoke(self, state):
+            return {
+                "performance_analysis": "Trend: SIDEWAYS\nAnalysis:\nStream fixture.",
+                "performance_trend": "SIDEWAYS",
+                "performance_guardrail_ok": True,
+                "performance_repaired": False,
+                "news_summary": "Sentiment: MIXED\nAnalysis:\nStream fixture.",
+                "news_sentiment": "MIXED",
+                "news_guardrail_ok": True,
+                "news_repaired": False,
+                "news": {"status": "ok", "provider": "fixture", "articles": []},
+                "financial_analysis": "Health: ADEQUATE\nAnalysis:\nStream fixture note.",
+                "financial_health": "ADEQUATE",
+                "financial_guardrail_ok": True,
+                "financial_repaired": False,
+                "financials": {"coverage": "partial", "allowed_health": "ADEQUATE"},
+                "risk_analysis": "Risk: MODERATE\nAnalysis:\nStream fixture risk.",
+                "risk_level": "MODERATE",
+                "risk_guardrail_ok": True,
+                "risk_repaired": False,
+                "risk": {},
+                "final_report": (
+                    "Stance: NEUTRAL\nConfidence: Low\n\n"
+                    "Executive summary:\nStream fixture brief."
+                ),
+                "draft_report": "Stance: NEUTRAL\nConfidence: Low\n\nExecutive summary:\nDraft.",
+                "recommendation": "NEUTRAL",
+                "confidence": "Low",
+                "report_guardrail_ok": True,
+                "report_repaired": False,
+            }
+
+    monkeypatch.setattr(graph, "get_forecast", lambda ticker: forecast)
+    monkeypatch.setattr(
+        graph, "build_performance_news_financial_graph", lambda: FakeGraph()
+    )
+    monkeypatch.setattr(graph.ReportCache, "read", lambda self, ticker: None)
+    monkeypatch.setattr(graph.ReportCache, "set", lambda self, ticker, result: None)
+    monkeypatch.setattr(
+        graph,
+        "get_company_profile",
+        lambda ticker: {"ticker": ticker, "name": "Microsoft", "status": "ok"},
+    )
+    monkeypatch.setattr(
+        graph,
+        "explain_summary_chips",
+        lambda **kwargs: {
+            "trend": "t",
+            "news": "n",
+            "confidence": "c",
+            "projected_move": "m",
+            "risk": "r",
+        },
+    )
+
+    events = list(graph.analyze_stock_stream("MSFT"))
+    stages = [e["stage"] for e in events if e["event"] == "stage"]
+    assert stages[0] == "forecast"
+    assert "company" in stages
+    assert "perf" in stages
+    assert "report" in stages
+    assert events[-1]["event"] == "done"
+    assert events[-1]["partial"]["status"] == "ok"
+    assert events[-1]["partial"]["run_complete"] is True
+    # Forecast partial is available before agents finish.
+    forecast_event = next(e for e in events if e["stage"] == "forecast")
+    assert forecast_event["partial"]["predictions"]["last_close"] == 400.0
+    assert "perf" not in forecast_event["ready"]
+
+
 def test_build_graphs_available():
     from src.agents.graph import (
         build_full_graph,

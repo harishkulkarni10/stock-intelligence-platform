@@ -9,7 +9,7 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 import backend.state as app_state
@@ -24,6 +24,7 @@ configure_logging()
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB_DIR = ROOT / "frontend" / "web"
+PULSE_DIR = ROOT / "frontendtesting"
 
 
 def _redis_url() -> str:
@@ -137,6 +138,40 @@ def ui_plotly() -> FileResponse:
         path,
         media_type="application/javascript",
         headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+@app.get("/pulse")
+def pulse_redirect() -> RedirectResponse:
+    return RedirectResponse(url="/pulse/", status_code=307)
+
+
+@app.get("/pulse/")
+def pulse_index() -> FileResponse:
+    """Experimental Pulse UI (frontendtesting/) — does not replace the main desk."""
+    path = PULSE_DIR / "index.html"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="frontendtesting UI missing")
+    return FileResponse(path, headers=_no_cache_headers())
+
+
+@app.get("/pulse/styles.css")
+def pulse_styles() -> FileResponse:
+    path = PULSE_DIR / "styles.css"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="frontendtesting styles missing")
+    return FileResponse(path, media_type="text/css", headers=_no_cache_headers())
+
+
+@app.get("/pulse/app.js")
+def pulse_app_js() -> FileResponse:
+    path = PULSE_DIR / "app.js"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="frontendtesting app.js missing")
+    return FileResponse(
+        path,
+        media_type="application/javascript",
+        headers=_no_cache_headers(),
     )
 
 

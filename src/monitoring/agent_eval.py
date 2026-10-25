@@ -29,6 +29,14 @@ from src.agents.report_guardrails import (
     stance_from_trend,
     validate_report,
 )
+from src.agents.research_chat import answer_research_question
+from src.agents.research_guardrails import (
+    OUT_OF_SCOPE as RESEARCH_OUT_OF_SCOPE,
+    build_research_facts,
+    deterministic_research_answer,
+    validate_research_reply,
+)
+from src.agents.research_tools import compare_labels
 from src.agents.tools import (
     format_financials_for_prompt,
     format_forecast_for_prompt,
@@ -612,17 +620,145 @@ def evaluate_report_fixtures() -> dict[str, Any]:
     return {"ok": passed, "cases": rows}
 
 
+def _research_eval_packet() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "ticker": "AAPL",
+        "performance_trend": "SIDEWAYS",
+        "performance_analysis": "Trend: SIDEWAYS\nAnalysis:\nFlat path.",
+        "news_sentiment": "POSITIVE",
+        "news_summary": "Sentiment: POSITIVE\nAnalysis:\nSupportive headlines.",
+        "financial_health": "STRONG",
+        "financial_analysis": "Health: STRONG\nAnalysis:\nSolid margins.",
+        "risk_level": "MODERATE",
+        "risk_analysis": "Risk: MODERATE\nAnalysis:\nSome uncertainty.",
+        "final_report": "Stance: NEUTRAL\nConfidence: Medium\n\nExecutive summary:\nMixed.",
+        "recommendation": "NEUTRAL",
+        "confidence": "Medium",
+        "predictions": {
+            "last_close": 180.0,
+            "model_source": "child",
+            "horizon": 5,
+            "predictions": [
+                {"step": 1, "value": 180.5},
+                {"step": 5, "value": 182.0},
+            ],
+        },
+        "financials": {"metrics": {"revenue_growth": 0.08}},
+        "risk": {"metrics": {"realized_vol": 0.22}},
+        "news": {
+            "articles": [
+                {"title": "Apple news", "url": "https://example.com/aapl-1"}
+            ]
+        },
+        "company": {"name": "Apple Inc."},
+    }
+
+
+def evaluate_research_fixtures() -> dict[str, Any]:
+    packet = _research_eval_packet()
+    facts = build_research_facts(packet)
+    rows: list[dict[str, Any]] = []
+
+    # Grounded deterministic answer
+    good = deterministic_research_answer(packet, question="Explain disagreement")
+    good_check = validate_research_reply(good, facts)
+    comparison = compare_labels(packet)
+    rows.append(
+        {
+            "id": "research_deterministic_ok",
+            "pass": good_check.ok
+            and comparison["agreement"] == "disagreement"
+            and "POSITIVE" in good
+            and ("NEUTRAL" in good or "SIDEWAYS" in good),
+        }
+    )
+
+    # Invented price rejected
+    bad = "### Bad\nPrice will be 999.99 tomorrow.\n"
+    bad_check = validate_research_reply(bad, facts)
+    rows.append(
+        {
+            "id": "research_invented_price",
+            "pass": (not bad_check.ok)
+            and any(e.startswith("unknown_number") for e in bad_check.errors),
+        }
+    )
+
+    # Buy question out of scope
+    buy = answer_research_question(
+        "Should I buy AAPL?",
+        run_context=packet,
+        llm=None,
+    )
+    rows.append(
+        {
+            "id": "research_buy_oos",
+            "pass": buy["out_of_scope"] is True and buy["reply"] == RESEARCH_OUT_OF_SCOPE,
+        }
+    )
+
+    # No-run behavior
+    empty = answer_research_question("Explain disagreement", run_context=None)
+    rows.append(
+        {
+            "id": "research_no_run",
+            "pass": "No open run" in empty["reply"] and empty["out_of_scope"] is False,
+        }
+    )
+
+    # Harness recovers invented number from LLM
+    class _BadLLM:
+        def invoke(self, messages):
+            return (
+                "### Outlook\n"
+                "- Target 999.99 for sure.\n"
+                "- News POSITIVE vs stance NEUTRAL.\n"
+            )
+
+    recovered = answer_research_question(
+        "Why NEUTRAL if news is POSITIVE?",
+        run_context=packet,
+        llm=_BadLLM(),
+    )
+    rows.append(
+        {
+            "id": "research_harness_recovers",
+            "pass": (
+                recovered["out_of_scope"] is False
+                and "999.99" not in recovered["reply"]
+                and (
+                    "POSITIVE" in recovered["reply"]
+                    or "NEUTRAL" in recovered["reply"]
+                    or "SIDEWAYS" in recovered["reply"]
+                )
+            ),
+        }
+    )
+
+    passed = all(r["pass"] for r in rows)
+    return {"ok": passed, "cases": rows}
+
+
 def evaluate_all_agent_fixtures() -> dict[str, Any]:
     performance = evaluate_performance_fixtures()
     news = evaluate_news_fixtures()
     financial = evaluate_financial_fixtures()
     report = evaluate_report_fixtures()
+    research = evaluate_research_fixtures()
     return {
-        "ok": performance["ok"] and news["ok"] and financial["ok"] and report["ok"],
+        "ok": (
+            performance["ok"]
+            and news["ok"]
+            and financial["ok"]
+            and report["ok"]
+            and research["ok"]
+        ),
         "performance": performance,
         "news": news,
         "financial": financial,
         "report": report,
+        "research": research,
     }
 
 
@@ -638,6 +774,9 @@ class AgentEvaluator:
 
     def evaluate_report(self) -> dict[str, Any]:
         return evaluate_report_fixtures()
+
+    def evaluate_research(self) -> dict[str, Any]:
+        return evaluate_research_fixtures()
 
     def evaluate_all(self) -> dict[str, Any]:
         return evaluate_all_agent_fixtures()

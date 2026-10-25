@@ -10,9 +10,9 @@
       href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/styles.css?v=20260355" />
+    <link rel="stylesheet" href="/styles.css?v=20260356" />
     <script src="/vendor/plotly.min.js?v=2.35.2"></script>
-    <script src="/app.js?v=20260355" defer></script>
+    <script src="/app.js?v=20260357" defer></script>
   </head>
   <body>
     <header class="topbar" id="topBar">
@@ -553,7 +553,7 @@
     </main>
 
     <div id="helpChat" class="help-chat" aria-live="polite">
-      <div id="helpChatPanel" class="help-chat-panel hidden" role="dialog" aria-label="Guide AI assistant">
+      <div id="helpChatPanel" class="help-chat-panel hidden" role="dialog" aria-label="Desk AI assistant">
         <div class="help-chat-head">
           <div class="help-chat-brand">
             <span class="help-ai-mark" aria-hidden="true">
@@ -567,13 +567,17 @@
               </svg>
             </span>
             <div class="help-chat-title-row">
-              <strong>Guide</strong>
+              <strong id="helpChatTitle">Guide</strong>
               <span class="help-ai-pill">AI</span>
             </div>
           </div>
-          <button type="button" class="ghost-btn help-chat-close" id="helpChatClose" aria-label="Close Guide">
+          <button type="button" class="ghost-btn help-chat-close" id="helpChatClose" aria-label="Close assistant">
             ✕
           </button>
+        </div>
+        <div id="helpChatModeBar" class="help-chat-mode-bar" hidden>
+          <button type="button" class="help-mode-chip is-active" data-help-mode="guide">Guide</button>
+          <button type="button" class="help-mode-chip" data-help-mode="research" disabled title="Run agents first">Research</button>
         </div>
         <div id="helpChatMessages" class="help-chat-messages">
           <div id="helpChatEmpty" class="help-chat-empty">
@@ -587,20 +591,25 @@
                 </g>
               </svg>
             </span>
-            <p class="help-chat-empty-title">Ask Guide</p>
+            <p class="help-chat-empty-title" id="helpChatEmptyTitle">Ask Guide</p>
           </div>
         </div>
         <div id="helpChatSuggestions" class="help-chat-suggestions" hidden>
-          <button type="button" class="help-suggest" data-help-q="What does the Performance analyst do?">Performance analyst</button>
-          <button type="button" class="help-suggest" data-help-q="What does the Market expert do?">Market expert</button>
-          <button type="button" class="help-suggest" data-help-q="What does the Financial analyst do?">Financial analyst</button>
-          <button type="button" class="help-suggest" data-help-q="What does the Risk analyst do?">Risk analyst</button>
-          <button type="button" class="help-suggest" data-help-q="What does the Research brief do?">Research brief</button>
-          <button type="button" class="help-suggest" data-help-q="How do I read a finished run?">How to read a run</button>
-          <button type="button" class="help-suggest" data-help-q="What is On your desk?">On your desk</button>
+          <button type="button" class="help-suggest" data-help-q="What does the Performance analyst do?" data-mode="guide">Performance analyst</button>
+          <button type="button" class="help-suggest" data-help-q="What does the Market expert do?" data-mode="guide">Market expert</button>
+          <button type="button" class="help-suggest" data-help-q="What does the Financial analyst do?" data-mode="guide">Financial analyst</button>
+          <button type="button" class="help-suggest" data-help-q="What does the Risk analyst do?" data-mode="guide">Risk analyst</button>
+          <button type="button" class="help-suggest" data-help-q="What does the Research brief do?" data-mode="guide">Research brief</button>
+          <button type="button" class="help-suggest" data-help-q="How do I read a finished run?" data-mode="guide">How to read a run</button>
+          <button type="button" class="help-suggest" data-help-q="What is On your desk?" data-mode="guide">On your desk</button>
+          <button type="button" class="help-suggest" data-help-q="Explain disagreement across specialists" data-mode="research" hidden>Explain disagreement</button>
+          <button type="button" class="help-suggest" data-help-q="Why this confidence?" data-mode="research" hidden>Why this confidence?</button>
+          <button type="button" class="help-suggest" data-help-q="Walk through Risk on this run" data-mode="research" hidden>Walk through Risk</button>
+          <button type="button" class="help-suggest" data-help-q="What is the projected move and forecast path?" data-mode="research" hidden>Forecast path</button>
+          <button type="button" class="help-suggest" data-help-q="Summarize the Research brief bull vs bear case" data-mode="research" hidden>Bull vs bear</button>
         </div>
         <form id="helpChatForm" class="help-chat-form" autocomplete="off">
-          <label class="sr-only" for="helpChatInput">Ask Guide</label>
+          <label class="sr-only" for="helpChatInput">Ask the desk assistant</label>
           <input
             id="helpChatInput"
             type="text"
@@ -637,7 +646,7 @@
               </g>
             </svg>
           </span>
-          <span class="help-chat-toggle-label">Guide</span>
+          <span class="help-chat-toggle-label" id="helpChatToggleLabel">Guide</span>
         </span>
       </button>
     </div>

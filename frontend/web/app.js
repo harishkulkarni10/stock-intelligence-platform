@@ -173,10 +173,19 @@ function sessionRunCount() {
   return sessionStore.order.length;
 }
 
-function upsertSessionRun(payload) {
-  if (!payload || payload.status !== "ok") return;
+function upsertSessionRun(payload, { commit = true } = {}) {
+  if (!payload) return;
   const ticker = normalizeTicker(payload.ticker || "");
   if (!ticker) return;
+  lastAnalyzePayload = payload;
+  window._lastAnalyzeTicker = ticker;
+  if (typeof window.syncHelpChatMode === "function") {
+    window.syncHelpChatMode();
+  }
+  // Only pin finished runs on the desk.
+  if (!commit || payload.status !== "ok" || payload.run_complete === false) {
+    return;
+  }
   const existing = sessionStore.byTicker[ticker] || {};
   sessionStore.byTicker[ticker] = {
     ticker,
@@ -196,8 +205,6 @@ function upsertSessionRun(payload) {
   for (const key of Object.keys(sessionStore.byTicker)) {
     if (!keep.has(key)) delete sessionStore.byTicker[key];
   }
-  window._lastAnalyzeTicker = ticker;
-  lastAnalyzePayload = payload;
 }
 
 function getSessionRun(ticker) {
@@ -538,13 +545,48 @@ function historyPoints(predictions) {
     .filter((row) => row.date && Number.isFinite(row.value));
 }
 
-function setLoadingStep(index) {
+function setLoadingStep(index, { complete = false } = {}) {
   document.querySelectorAll("#loadingSteps li").forEach((el) => {
     const step = Number(el.dataset.loadStep);
-    el.classList.toggle("active", step === index);
-    el.classList.toggle("on", step === index);
-    el.classList.toggle("done", step < index);
+    const done = complete ? step <= index : step < index;
+    const active = !complete && step === index;
+    el.classList.toggle("active", active);
+    el.classList.toggle("on", active);
+    el.classList.toggle("done", done);
   });
+}
+
+const AGENT_STAGE = {
+  perf: { tab: "a1", prefix: "agent1", label: "Performance" },
+  news: { tab: "a2", prefix: "agent2", label: "Market" },
+  financial: { tab: "a3", prefix: "agent3", label: "Financial" },
+  risk: { tab: "a4", prefix: "agent4", label: "Risk" },
+  report: { tab: "a5", prefix: "agent5", label: "Brief" },
+};
+
+function setAgentRunState(readySet) {
+  const ready = readySet instanceof Set ? readySet : new Set(readySet || []);
+  Object.entries(AGENT_STAGE).forEach(([stage, meta]) => {
+    const tab = document.querySelector(`[data-agent-tab="${meta.tab}"]`);
+    if (!tab) return;
+    const isReady = ready.has(stage);
+    tab.classList.toggle("is-pending", !isReady);
+    tab.classList.toggle("is-ready", isReady);
+    tab.toggleAttribute("data-pending", !isReady);
+  });
+}
+
+function renderAgentPending(prefix, label) {
+  const chips = $(`${prefix}Chips`);
+  if (chips) chips.innerHTML = "";
+  const preview = $(`${prefix}ChipPreview`);
+  if (preview) preview.textContent = "Running…";
+  const body = $(`${prefix}Body`);
+  if (body) {
+    body.innerHTML =
+      `<p class="agent-pending"><span class="agent-pending-dot" aria-hidden="true"></span>` +
+      `${label} is still running…</p>`;
+  }
 }
 
 function syncRunOffset() {
@@ -563,23 +605,16 @@ function startLoadingUI(ticker) {
   panel.classList.remove("hidden", "is-complete");
   panel.setAttribute("aria-busy", "true");
   $("loadingTitle").textContent = `Analyzing ${ticker}`;
-  $("loadingSub").textContent = sessionRunCount()
-    ? "Prior report stays readable below"
-    : "Path → five agents";
+  $("loadingSub").textContent = "Results appear as each step finishes";
   requestAnimationFrame(() => syncRunOffset());
   $("analyzeBtn").textContent = "…";
   $("analyzeBtn").disabled = true;
-  let step = 0;
+  if (loadStepTimer) {
+    clearInterval(loadStepTimer);
+    loadStepTimer = null;
+  }
   setLoadingStep(0);
-  if (loadStepTimer) clearInterval(loadStepTimer);
-  loadStepTimer = setInterval(() => {
-    step = Math.min(step + 1, 5);
-    setLoadingStep(step);
-    if (step >= 5 && loadStepTimer) {
-      clearInterval(loadStepTimer);
-      loadStepTimer = null;
-    }
-  }, 8000);
+  setAgentRunState(new Set());
 }
 
 function keepPriorResultsOpenDuringRun(nextTicker) {
@@ -1212,7 +1247,17 @@ function renderAgentCard(prefix, text) {
   renderProse($(`${prefix}Body`), prose || text || "");
 }
 
-function renderResults(data) {
+function renderResults(data, options = {}) {
+  const {
+    ready = null,
+    streaming = false,
+    commitSession = true,
+    preserveTab = false,
+  } = options;
+  const readySet = ready instanceof Set
+    ? ready
+    : new Set(ready || (streaming ? [] : ["perf", "news", "financial", "risk", "report"]));
+
   const predictions = data.predictions || {};
   const history = historyPoints(predictions);
   const forecast = forecastPoints(predictions);
@@ -1227,9 +1272,11 @@ function renderResults(data) {
     signedMove = `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`;
   }
 
-  const trend = data.performance_trend || data.recommendation || "—";
-  const news = data.news_sentiment || "—";
-  const risk = data.risk_level || "—";
+  const trend = readySet.has("perf")
+    ? data.performance_trend || data.recommendation || "—"
+    : "—";
+  const news = readySet.has("news") ? data.news_sentiment || "—" : "—";
+  const risk = readySet.has("risk") ? data.risk_level || "—" : "—";
 
   const trendEl = $("metricTrend");
   const newsEl = $("metricNews");
@@ -1285,21 +1332,47 @@ function renderResults(data) {
   `;
 
   renderCompany(data.company || {});
-  renderAgentCard("agent1", data.performance_analysis || "");
-  renderAgentCard("agent2", data.news_summary || "");
-  renderAgentCard("agent3", data.financial_analysis || "");
-  renderAgentCard("agent4", data.risk_analysis || "");
-  renderAgentCard("agent5", data.final_report || data.draft_report || "");
-  setAgentTab("a1");
+  setAgentRunState(readySet);
+
+  const agentBodies = [
+    ["perf", "agent1", data.performance_analysis || "", "Performance"],
+    ["news", "agent2", data.news_summary || "", "Market expert"],
+    ["financial", "agent3", data.financial_analysis || "", "Financial analyst"],
+    ["risk", "agent4", data.risk_analysis || "", "Risk analyst"],
+    ["report", "agent5", data.final_report || data.draft_report || "", "Research brief"],
+  ];
+  for (const [stage, prefix, text, label] of agentBodies) {
+    if (readySet.has(stage) && text) {
+      renderAgentCard(prefix, text);
+    } else if (streaming && !readySet.has(stage)) {
+      renderAgentPending(prefix, label);
+    } else if (readySet.has(stage)) {
+      renderAgentCard(prefix, text || "");
+    } else {
+      renderAgentPending(prefix, label);
+    }
+  }
+  if (!preserveTab) {
+    const newest = ["perf", "news", "financial", "risk", "report"]
+      .filter((s) => readySet.has(s))
+      .pop();
+    setAgentTab(newest ? AGENT_STAGE[newest].tab : "a1");
+  }
 
   const newsPayload = data.news || {};
-  const articles = newsPayload.articles || [];
-  $("sourcesMeta").textContent =
-    `${newsPayload.provider || "—"} · ${articles.length} ticker-relevant`;
+  const articles = readySet.has("news") ? newsPayload.articles || [] : [];
+  $("sourcesMeta").textContent = readySet.has("news")
+    ? `${newsPayload.provider || "—"} · ${articles.length} ticker-relevant`
+    : "Waiting for Market expert…";
 
   const list = $("sourcesList");
   list.innerHTML = "";
-  if (!articles.length) {
+  if (!readySet.has("news")) {
+    const empty = document.createElement("li");
+    empty.textContent = "Sources appear when Market expert finishes.";
+    empty.style.color = "var(--muted)";
+    list.appendChild(empty);
+  } else if (!articles.length) {
     const empty = document.createElement("li");
     empty.textContent = newsPayload.error || "No sources";
     empty.style.color = "var(--muted)";
@@ -1346,7 +1419,7 @@ function renderResults(data) {
   }
 
   const ticker = data.ticker || $("tickerInput").value || "—";
-  upsertSessionRun(data);
+  upsertSessionRun(data, { commit: commitSession && data.run_complete !== false });
   const perfOk = data.performance_guardrail_ok;
   const newsOk = data.news_guardrail_ok;
   const finOk = data.financial_guardrail_ok;
@@ -1356,7 +1429,11 @@ function renderResults(data) {
   }
 
   const badge = $("cacheBadge");
-  if (data.cached) {
+  if (streaming && data.run_complete === false) {
+    badge.classList.remove("hidden", "is-cached");
+    badge.classList.add("is-fresh");
+    badge.textContent = "Live run · updating";
+  } else if (data.cached) {
     const ageSec = Number(data.cache_age_seconds || 0);
     const ttlSec = Number(data.cache_ttl_seconds || 0);
     const ageMin = Math.max(0, Math.round(ageSec / 60));
@@ -1374,13 +1451,55 @@ function renderResults(data) {
     badge.textContent = "Fresh analysis";
   }
 
-  $("runMeta").textContent =
-    `${data.cached ? "Showing a recent saved result" : "Fresh analysis"} · research support only${checks}`;
+  $("runMeta").textContent = streaming && data.run_complete === false
+    ? `Live run · finished steps are ready below · research support only${checks}`
+    : `${data.cached ? "Showing a recent saved result" : "Fresh analysis"} · research support only${checks}`;
 
   showResults(ticker);
-  markResultsReady(ticker);
+  if (!streaming || data.run_complete !== false) {
+    markResultsReady(ticker);
+  } else {
+    window._lastAnalyzeTicker = ticker;
+    updateSessionResultsChrome(ticker);
+    document.title = `Running · ${ticker} | Stock Intelligence`;
+  }
   renderForecastChart(history, forecast, chartRange);
   renderSessionRunsList(ticker);
+}
+
+async function readAnalyzeSse(response, onEvent) {
+  if (!response.body) {
+    throw new Error("Streaming not supported by this browser");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const chunks = buffer.split("\n\n");
+    buffer = chunks.pop() || "";
+    for (const chunk of chunks) {
+      const lines = chunk.split("\n");
+      const dataLines = [];
+      for (const line of lines) {
+        if (line.startsWith("data:")) {
+          dataLines.push(line.slice(5).trimStart());
+        }
+      }
+      if (!dataLines.length) continue;
+      const raw = dataLines.join("\n");
+      if (!raw || raw === "[DONE]") continue;
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+      onEvent(parsed);
+    }
+  }
 }
 
 async function checkReady() {
@@ -1414,6 +1533,7 @@ async function analyze(ticker, { forceRefresh = false } = {}) {
 
   analyzeInFlight = true;
   runningTicker = ticker;
+  let userLockedAgentTab = false;
   $("errorBanner").classList.add("hidden");
   $("runBanner").classList.remove("hidden");
   $("runBanner").className = "run-toast running";
@@ -1428,7 +1548,6 @@ async function analyze(ticker, { forceRefresh = false } = {}) {
     showView("home", { preserveTicker: true });
   }
   startLoadingUI(ticker);
-  // Loader strip carries status; toast is a brief ack then clears.
   window.setTimeout(() => {
     if (analyzeInFlight && runningTicker === ticker) {
       $("runBanner").classList.add("hidden");
@@ -1436,12 +1555,26 @@ async function analyze(ticker, { forceRefresh = false } = {}) {
   }, 1800);
   updateSessionResultsChrome(window._lastAnalyzeTicker);
 
+  const onDeckClick = (event) => {
+    if (event.target.closest("[data-agent-tab]")) {
+      userLockedAgentTab = true;
+    }
+  };
+  const deck = $("agentDeck");
+  if (deck) deck.addEventListener("click", onDeckClick);
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  let finalPayload = null;
+  let sawStreamPaint = false;
+
   try {
-    const response = await fetch(`${API_BASE}/analyze`, {
+    const response = await fetch(`${API_BASE}/analyze/stream`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
       body: JSON.stringify({
         ticker,
         thread_id: threadId,
@@ -1449,8 +1582,8 @@ async function analyze(ticker, { forceRefresh = false } = {}) {
       }),
       signal: controller.signal,
     });
-    const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
       throw new Error(
         typeof payload.detail === "string"
           ? payload.detail
@@ -1459,22 +1592,64 @@ async function analyze(ticker, { forceRefresh = false } = {}) {
             : `HTTP ${response.status}`
       );
     }
-    if (payload.status !== "ok") {
-      throw new Error(payload.detail || payload.status || "Analyze failed");
+
+    await readAnalyzeSse(response, (event) => {
+      const partial = event.partial || {};
+      const ready = new Set(event.ready || []);
+      const step = Number(event.step_index);
+      if (Number.isFinite(step)) {
+        setLoadingStep(step, { complete: event.event === "done" });
+      }
+      $("loadingSub").textContent =
+        event.event === "done"
+          ? "Complete"
+          : `Live · ${event.stage || "running"}`;
+
+      if (event.event === "error") {
+        throw new Error(partial.detail || partial.status || "Analyze failed");
+      }
+
+      if (partial.predictions && Object.keys(partial.predictions).length) {
+        sawStreamPaint = true;
+        renderResults(partial, {
+          ready,
+          streaming: event.event !== "done",
+          commitSession: event.event === "done",
+          preserveTab: userLockedAgentTab && sawStreamPaint,
+        });
+        requestAnimationFrame(() => syncRunOffset());
+      }
+
+      if (event.event === "done") {
+        finalPayload = partial;
+      }
+    });
+
+    if (!finalPayload) {
+      throw new Error("Analyze stream ended without a result");
     }
-    lastAnalyzePayload = payload;
-    window._lastAnalyzeTicker = ticker;
+    if (finalPayload.status !== "ok") {
+      throw new Error(
+        finalPayload.detail || finalPayload.status || "Analyze failed"
+      );
+    }
+
+    setLoadingStep(5, { complete: true });
     runningTicker = null;
     analyzeInFlight = false;
     stopLoadingUI({ hide: true });
     completeLoadingUI(ticker);
-    renderResults(payload);
+    renderResults(finalPayload, {
+      ready: ["perf", "news", "financial", "risk", "report"],
+      streaming: false,
+      commitSession: true,
+      preserveTab: userLockedAgentTab,
+    });
     $("runBanner").classList.add("hidden");
   } catch (error) {
     runningTicker = null;
     analyzeInFlight = false;
     stopLoadingUI({ hide: true });
-    // On failure, keep prior results if any; otherwise return home.
     if (sessionRunCount()) {
       const fallback =
         getSessionRun(window._lastAnalyzeTicker) ||
@@ -1484,7 +1659,7 @@ async function analyze(ticker, { forceRefresh = false } = {}) {
         $("results").classList.add("hidden");
         $("home").classList.remove("hidden");
       }
-    } else {
+    } else if (!sawStreamPaint) {
       $("results").classList.add("hidden");
       $("home").classList.remove("hidden");
       renderHomeDemoChart();
@@ -1502,6 +1677,7 @@ async function analyze(ticker, { forceRefresh = false } = {}) {
     updateSessionResultsChrome(window._lastAnalyzeTicker);
   } finally {
     clearTimeout(timer);
+    if (deck) deck.removeEventListener("click", onDeckClick);
     analyzeInFlight = false;
     runningTicker = null;
     $("analyzeBtn").disabled = false;
@@ -2042,6 +2218,110 @@ function renderHelpRichHtml(raw) {
   return { html: `<div class="help-rich">${html}</div>`, next };
 }
 
+function truncateAnalyzeForChat(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const ticker = String(payload.ticker || "").trim().toUpperCase();
+  if (!ticker) return null;
+  const preds = payload.predictions && typeof payload.predictions === "object"
+    ? payload.predictions
+    : {};
+  const news = payload.news && typeof payload.news === "object" ? payload.news : {};
+  const financials =
+    payload.financials && typeof payload.financials === "object"
+      ? payload.financials
+      : {};
+  const risk = payload.risk && typeof payload.risk === "object" ? payload.risk : {};
+  const company =
+    payload.company && typeof payload.company === "object" ? payload.company : {};
+  const clip = (text, n = 1200) => {
+    const s = String(text || "").trim();
+    return s.length <= n ? s : `${s.slice(0, n - 1)}…`;
+  };
+  const articles = (news.articles || []).slice(0, 8).map((item) => ({
+    title: item.title || item.headline || "",
+    url: item.url || item.link || "",
+    published: item.published || item.datetime || item.date || "",
+  }));
+  // API DTO uses predictions.forecast (not .predictions).
+  const predPoints = (preds.forecast || preds.predictions || [])
+    .slice(0, 10)
+    .map((item) => ({
+      step: item.step,
+      value: item.value,
+      date: item.date || item.timestamp,
+    }));
+  return {
+    ticker,
+    status: payload.status,
+    performance_trend: payload.performance_trend,
+    performance_analysis: clip(payload.performance_analysis),
+    news_sentiment: payload.news_sentiment,
+    news_summary: clip(payload.news_summary),
+    financial_health: payload.financial_health,
+    financial_analysis: clip(payload.financial_analysis),
+    risk_level: payload.risk_level,
+    risk_analysis: clip(payload.risk_analysis),
+    final_report: clip(payload.final_report, 2000),
+    recommendation: payload.recommendation,
+    confidence: payload.confidence,
+    performance_repaired: !!payload.performance_repaired,
+    predictions: {
+      last_close: preds.last_close,
+      last_date: preds.last_date,
+      model_source: preds.model_source,
+      horizon: preds.horizon,
+      forecast: predPoints,
+      predictions: predPoints,
+    },
+    financials: {
+      metrics: financials.metrics || {},
+      signals: financials.signals || {},
+      coverage: financials.coverage,
+    },
+    risk: { metrics: risk.metrics || {} },
+    news: { articles },
+    company: {
+      name: company.name || company.longName,
+      sector: company.sector,
+      industry: company.industry,
+    },
+    cached: !!payload.cached,
+    cache_age_seconds: payload.cache_age_seconds,
+  };
+}
+
+/** All finished desk packets for Research (multi-run scope for this visit). */
+function buildDeskAnalyzeContext() {
+  const desk_packets = {};
+  const order = Array.isArray(sessionStore.order) ? sessionStore.order.slice(0, 20) : [];
+  for (const sym of order) {
+    const raw = getSessionRun(sym);
+    const truncated = truncateAnalyzeForChat(raw);
+    if (truncated && truncated.ticker) {
+      desk_packets[truncated.ticker] = truncated;
+    }
+  }
+  const active = normalizeTicker(
+    window._lastAnalyzeTicker ||
+      (lastAnalyzePayload && lastAnalyzePayload.ticker) ||
+      order[0] ||
+      ""
+  );
+  if (active && !desk_packets[active] && lastAnalyzePayload) {
+    const truncated = truncateAnalyzeForChat(lastAnalyzePayload);
+    if (truncated && truncated.ticker) {
+      desk_packets[truncated.ticker] = truncated;
+    }
+  }
+  const tickers = Object.keys(desk_packets);
+  if (!tickers.length) return null;
+  return {
+    active_ticker: active && desk_packets[active] ? active : tickers[0],
+    desk_tickers: tickers,
+    desk_packets,
+  };
+}
+
 function wireHelpChat() {
   const panel = $("helpChatPanel");
   const toggle = $("helpChatToggle");
@@ -2053,6 +2333,10 @@ function wireHelpChat() {
   const sendBtn = $("helpChatSend");
   const stopBtn = $("helpChatStop");
   const emptyState = $("helpChatEmpty");
+  const modeBar = $("helpChatModeBar");
+  const titleEl = $("helpChatTitle");
+  const emptyTitle = $("helpChatEmptyTitle");
+  const toggleLabel = $("helpChatToggleLabel");
   if (!panel || !toggle || !form || !input || !messages) return;
 
   const history = [];
@@ -2060,6 +2344,7 @@ function wireHelpChat() {
   let welcomed = false;
   let activeController = null;
   let activePending = null;
+  let chatMode = "guide";
 
   const guideMarkSvg =
     '<svg class="help-diamond" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">' +
@@ -2070,6 +2355,10 @@ function wireHelpChat() {
     '<path fill="#34A853" d="M4.8 12L12 2.6V12z"/>' +
     "</g></svg>";
 
+  function hasOpenRun() {
+    return !!buildDeskAnalyzeContext();
+  }
+
   function setEmptyVisible(show) {
     if (!emptyState) return;
     emptyState.classList.toggle("hidden", !show);
@@ -2079,6 +2368,58 @@ function wireHelpChat() {
     if (!suggestions) return;
     if (show) suggestions.removeAttribute("hidden");
     else suggestions.setAttribute("hidden", "");
+  }
+
+  function refreshSuggestionVisibility() {
+    if (!suggestions) return;
+    suggestions.querySelectorAll("[data-mode]").forEach((btn) => {
+      const forMode = btn.getAttribute("data-mode");
+      const show = forMode === chatMode;
+      btn.hidden = !show;
+    });
+  }
+
+  function syncHelpChrome() {
+    const researchReady = hasOpenRun();
+    if (modeBar) {
+      modeBar.hidden = false;
+      modeBar.querySelectorAll("[data-help-mode]").forEach((chip) => {
+        const mode = chip.getAttribute("data-help-mode");
+        chip.classList.toggle("is-active", mode === chatMode);
+        if (mode === "research") {
+          chip.disabled = !researchReady;
+          chip.title = researchReady
+            ? "Ask about any finished run on this desk"
+            : "Run agents first";
+        }
+      });
+    }
+    if (!researchReady && chatMode === "research") {
+      chatMode = "guide";
+    }
+    const label = chatMode === "research" ? "Research" : "Guide";
+    if (titleEl) titleEl.textContent = label;
+    if (emptyTitle) {
+      emptyTitle.textContent =
+        chatMode === "research" ? "Ask about desk runs" : "Ask Guide";
+    }
+    if (toggleLabel) toggleLabel.textContent = label;
+    if (input) {
+      input.placeholder =
+        chatMode === "research"
+          ? "Ask about any desk ticker…"
+          : "Ask Guide…";
+    }
+    if (toggle) {
+      toggle.title = chatMode === "research" ? "Ask Research Co-Pilot" : "Ask Guide";
+    }
+    refreshSuggestionVisibility();
+  }
+
+  function setChatMode(mode) {
+    if (mode === "research" && !hasOpenRun()) return;
+    chatMode = mode === "research" ? "research" : "guide";
+    syncHelpChrome();
   }
 
   function setSendingUi(on) {
@@ -2104,9 +2445,16 @@ function wireHelpChat() {
     panel.classList.toggle("hidden", !open);
     toggle.setAttribute("aria-expanded", open ? "true" : "false");
     if (open) {
+      if (hasOpenRun() && chatMode !== "research") {
+        // Prefer Research when a run is on the desk.
+        chatMode = "research";
+      }
+      syncHelpChrome();
       if (!welcomed) {
         setSuggestionsVisible(true);
         welcomed = true;
+      } else {
+        setSuggestionsVisible(true);
       }
       input.focus();
     }
@@ -2129,7 +2477,6 @@ function wireHelpChat() {
 
   function scrollToRowStart(row) {
     if (!messages || !row) return;
-    // Keep the start of this reply in view — do not jump to the end.
     const rowTop = row.offsetTop - messages.offsetTop;
     messages.scrollTop = Math.max(0, rowTop - 8);
   }
@@ -2171,6 +2518,9 @@ function wireHelpChat() {
   async function askQuestion(question) {
     const q = (question || "").trim();
     if (!q || sending) return;
+    if (chatMode === "research" && !hasOpenRun()) {
+      setChatMode("guide");
+    }
     setSendingUi(true);
     input.value = "";
     setSuggestionsVisible(false);
@@ -2184,14 +2534,20 @@ function wireHelpChat() {
     activeController = controller;
     const timeoutId = window.setTimeout(() => controller.abort("timeout"), 90000);
 
+    const body = {
+      message: q,
+      history: history.slice(-6),
+      mode: chatMode,
+    };
+    if (chatMode === "research") {
+      body.analyze_context = buildDeskAnalyzeContext();
+    }
+
     try {
       const response = await fetch(`${API_BASE}/help-chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: q,
-          history: history.slice(-6),
-        }),
+        body: JSON.stringify(body),
         signal: controller.signal,
       });
       const payload = await response.json().catch(() => ({}));
@@ -2219,7 +2575,10 @@ function wireHelpChat() {
         if (timedOut) {
           pending.classList.remove("pending");
           pending.innerHTML = "";
-          pending.textContent = "Timed out waiting for Guide. Try again.";
+          pending.textContent =
+            chatMode === "research"
+              ? "Timed out waiting for Research. Try again."
+              : "Timed out waiting for Guide. Try again.";
           scrollToRowStart(row);
         } else if (activePending && activePending.row && activePending.row.parentNode) {
           activePending.row.remove();
@@ -2251,10 +2610,17 @@ function wireHelpChat() {
   document.querySelectorAll("[data-open-help]").forEach((btn) => {
     btn.addEventListener("click", () => setOpen(true));
   });
+  if (modeBar) {
+    modeBar.addEventListener("click", (event) => {
+      const chip = event.target.closest("[data-help-mode]");
+      if (!chip || chip.disabled) return;
+      setChatMode(chip.getAttribute("data-help-mode"));
+    });
+  }
   if (suggestions) {
     suggestions.addEventListener("click", (event) => {
       const btn = event.target.closest("[data-help-q]");
-      if (!btn) return;
+      if (!btn || btn.hidden) return;
       setOpen(true);
       askQuestion(btn.dataset.helpQ);
     });
@@ -2264,6 +2630,9 @@ function wireHelpChat() {
     event.preventDefault();
     askQuestion(input.value);
   });
+
+  window.syncHelpChatMode = syncHelpChrome;
+  syncHelpChrome();
 }
 
 setTheme(localStorage.getItem("sip-theme") || "light");

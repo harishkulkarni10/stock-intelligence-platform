@@ -6,7 +6,10 @@ import os
 from pathlib import Path
 from typing import Any
 
+import json
+
 from fastapi import APIRouter, HTTPException, Response, status
+from fastapi.responses import StreamingResponse
 
 from backend import state, tasks
 from backend.rate_limiter import FixedWindowRateLimiter
@@ -46,6 +49,7 @@ def api_info() -> dict:
             "predict_parent": "POST /predict-parent",
             "predict_child": "POST /predict-child",
             "analyze": "POST /analyze",
+            "analyze_stream": "POST /analyze/stream",
             "help_chat": "POST /help-chat",
             "status": "GET /status/{task_id}",
             "docs": "GET /docs",
@@ -181,9 +185,31 @@ async def help_chat(request: HelpChatRequest) -> HelpChatResponse:
 
     def run() -> dict[str, Any]:
         from src.agents.help_chat import answer_help_question
+        from src.agents.research_chat import answer_research_question, resolve_chat_mode
 
         history = [item.model_dump() for item in request.history[-6:]]
-        return answer_help_question(request.message, history)
+        mode = resolve_chat_mode(request.mode, request.analyze_context)
+        if mode == "research":
+            result = answer_research_question(
+                request.message,
+                history,
+                request.analyze_context,
+            )
+            return {
+                "reply": result.get("reply") or "",
+                "out_of_scope": bool(result.get("out_of_scope")),
+                "mode": "research",
+                "repaired": bool(result.get("repaired")),
+                "tools_used": list(result.get("tools_used") or []),
+            }
+        guide = answer_help_question(request.message, history)
+        return {
+            "reply": guide.get("reply") or "",
+            "out_of_scope": bool(guide.get("out_of_scope")),
+            "mode": "guide",
+            "repaired": False,
+            "tools_used": [],
+        }
 
     ctx = contextvars.copy_context()
     result = await asyncio.get_running_loop().run_in_executor(
@@ -211,8 +237,63 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
     result = await asyncio.get_running_loop().run_in_executor(
         state.executor, lambda: ctx.run(run)
     )
-    if result.get("status") not in {"ok", "missing_model", "error", "training"}:
+    if result.get("status") not in {"ok", "missing_model", "error", "training", "running"}:
         result = {**result, "status": result.get("status") or "error"}
     if get_trace_id():
         result = {**result, "trace_id": get_trace_id()}
     return AnalyzeResponse.model_validate(result)
+
+
+@router.post("/analyze/stream")
+def analyze_stream(request: AnalyzeRequest) -> StreamingResponse:
+    """SSE: emit a stage event after forecast and each agent so the UI can paint early."""
+    _limit("analyze", request.ticker)
+    bind_context(ticker=request.ticker.upper())
+    trace_id = get_trace_id()
+    ticker = request.ticker
+    thread_id = request.thread_id
+    force_refresh = request.force_refresh
+
+    def generate():
+        from src.agents.graph import analyze_stock_stream
+
+        try:
+            for event in analyze_stock_stream(
+                ticker,
+                thread_id,
+                force_refresh=force_refresh,
+            ):
+                payload = dict(event)
+                if trace_id:
+                    payload["trace_id"] = trace_id
+                    partial = dict(payload.get("partial") or {})
+                    partial["trace_id"] = trace_id
+                    payload["partial"] = partial
+                yield f"data: {json.dumps(payload, default=str)}\n\n"
+        except Exception as exc:  # noqa: BLE001
+            err = {
+                "event": "error",
+                "stage": "llm",
+                "step_index": 0,
+                "ready": [],
+                "partial": {
+                    "status": "error",
+                    "ticker": str(ticker).upper(),
+                    "detail": str(exc),
+                    "run_complete": True,
+                },
+            }
+            if trace_id:
+                err["trace_id"] = trace_id
+                err["partial"]["trace_id"] = trace_id
+            yield f"data: {json.dumps(err, default=str)}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

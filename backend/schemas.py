@@ -86,6 +86,8 @@ class HelpChatMessage(BaseModel):
 class HelpChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
     history: list[HelpChatMessage] = Field(default_factory=list)
+    mode: str = Field(default="auto", max_length=16)
+    analyze_context: dict[str, Any] | None = None
 
     @field_validator("message")
     @classmethod
@@ -95,10 +97,21 @@ class HelpChatRequest(BaseModel):
             raise ValueError("message cannot be empty")
         return text
 
+    @field_validator("mode")
+    @classmethod
+    def normalize_mode(cls, value: str) -> str:
+        mode = (value or "auto").strip().lower()
+        if mode not in {"auto", "guide", "research"}:
+            raise ValueError("mode must be auto, guide, or research")
+        return mode
+
 
 class HelpChatResponse(BaseModel):
     reply: str
     out_of_scope: bool = False
+    mode: str = "guide"
+    repaired: bool = False
+    tools_used: list[str] = Field(default_factory=list)
 
 
 class AnalyzeResponse(BaseModel):
@@ -139,5 +152,6 @@ class AnalyzeResponse(BaseModel):
     cached_at_ts: int | None = None
     cache_age_seconds: int | None = None
     cache_ttl_seconds: int | None = None
+    run_complete: bool | None = None
     detail: str | None = None
     trace_id: str | None = None

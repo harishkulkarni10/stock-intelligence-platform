@@ -370,17 +370,45 @@ def run_news_harness(
             )
 
         invoke_started = time.perf_counter()
-        response = call(
-            [
-                SystemMessage(
-                    content=(
-                        "You write compact market news briefings. "
-                        "Stay medium length — useful, not long essays."
-                    )
-                ),
-                HumanMessage(content=prompt),
-            ]
-        )
+        try:
+            response = call(
+                [
+                    SystemMessage(
+                        content=(
+                            "You write compact market news briefings. "
+                            "Stay medium length — useful, not long essays."
+                        )
+                    ),
+                    HumanMessage(content=prompt),
+                ]
+            )
+        except Exception as exc:  # noqa: BLE001 — fall through to repair/fallback
+            invoke_ms = (time.perf_counter() - invoke_started) * 1000
+            log_event(
+                logger,
+                "agent2_llm_error",
+                level=logging.WARNING,
+                step="agent2_llm",
+                status="error",
+                duration_ms=invoke_ms,
+                metrics={"attempt": attempt},
+                data={"error": str(exc)[:320]},
+            )
+            text = ""
+            result = NewsGuardrailResult(
+                ok=False, parsed_sentiment=None, errors=("llm_error",)
+            )
+            attempts.append(
+                {
+                    "attempt": attempt,
+                    "ok": False,
+                    "errors": ["llm_error"],
+                    "parsed_sentiment": None,
+                    "chars": 0,
+                    "duration_ms": round(invoke_ms, 2),
+                }
+            )
+            continue
         invoke_ms = (time.perf_counter() - invoke_started) * 1000
         text = message_text(response)
         result = validate_news_analysis(text, facts)

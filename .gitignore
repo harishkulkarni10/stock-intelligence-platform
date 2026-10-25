@@ -43,3 +43,6 @@ Thumbs.db
 
 # Local UI experiments - do not commit
 frontendtesting/
+# Local-only / not part of SIP web desk
+Stock-Forecasting-Research/
+frontend/pro/

@@ -113,10 +113,23 @@ How to use it:
 - Recent saved result: if you run the same ticker again soon, you may get the prior result faster. A badge shows when that happens.
 - Refresh analysis: run again from scratch when you want the newest pass.
 
+## Guide vs Research Co-Pilot
+- Guide: product how-to — what agents do, Lab, On your desk, how to read a run. Always available.
+- Research Co-Pilot: opens when a finished analysis is on the desk. Explains *this run* — labels, disagreement, forecast path, Risk, Sources — using the packet already on screen.
+- Switch with the Guide | Research chips in the assistant panel.
+- Research does not re-run the full desk and does not place trades.
+
+## Reading confidence (Research)
+- Confidence is mainly about forecast trust on this desk (model path quality).
+- Low often means a simpler persistence path or a repaired Performance note.
+- Medium is the usual rating when a real model path is in play.
+- Specialist disagreement (for example MIXED news vs BULLISH trend) is useful context — it does not by itself equal Medium confidence.
+
 ## Limits of this desk
 - Research support only — no trade placement, no portfolio management, no personalized buy/sell advice.
 - Specialists explain tool outputs; they should not invent prices, headlines, or statement figures.
-- Guide (this assistant) explains the product and agents — not live ticker recommendations or general company trivia.
+- Guide explains the product and agents — not live ticker recommendations or general company trivia.
+- Research Co-Pilot explains the open run only — not buy/sell advice or unrelated company trivia.
 
 ## Follow-up topics users often need
-Performance analyst, Market expert, Financial analyst, Risk analyst, Research brief, How to read a run, Forecast chart, On your desk, Refresh analysis, What this desk is
+Performance analyst, Market expert, Financial analyst, Risk analyst, Research brief, How to read a run, Forecast chart, On your desk, Refresh analysis, What this desk is, Research Co-Pilot

@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import os
 import re
+import xml.etree.ElementTree as ET
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from typing import Any
+from xml.etree.ElementTree import ParseError
 
 import requests
 import yfinance as yf
@@ -206,18 +209,15 @@ def _news_from_finnhub(ticker: str, *, limit: int = 5) -> list[dict[str, str]]:
     return items
 
 
-def _news_from_yahoo(ticker: str, *, limit: int = 5) -> list[dict[str, str]]:
+def _news_from_yahoo_quote(ticker: str, *, limit: int = 5) -> list[dict[str, str]]:
+    """Parse yfinance Ticker.news (often empty on recent yfinance builds)."""
     raw = yf.Ticker(ticker).news or []
     items: list[dict[str, str]] = []
     fetch_cap = max(limit * 5, 25)
     for entry in raw[:fetch_cap]:
         content = entry.get("content") if isinstance(entry.get("content"), dict) else entry
         provider = content.get("provider") if isinstance(content, dict) else {}
-        title = (
-            (content or {}).get("title")
-            or entry.get("title")
-            or ""
-        )
+        title = (content or {}).get("title") or entry.get("title") or ""
         summary = (content or {}).get("summary") or entry.get("summary") or ""
         url = ""
         click = (content or {}).get("clickThroughUrl") or {}
@@ -243,6 +243,67 @@ def _news_from_yahoo(ticker: str, *, limit: int = 5) -> list[dict[str, str]]:
                 "publisher": str((provider or {}).get("displayName") or ""),
             }
         )
+    return items
+
+
+def _news_from_yahoo_rss(ticker: str, *, limit: int = 5) -> list[dict[str, str]]:
+    """Yahoo Finance headline RSS — reliable fallback when Ticker.news is empty."""
+    symbol = normalize_ticker(ticker)
+    url = (
+        "https://feeds.finance.yahoo.com/rss/2.0/headline"
+        f"?s={symbol}&region=US&lang=en-US"
+    )
+    response = requests.get(
+        url,
+        timeout=30,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (compatible; StockIntelligence/0.1; +local-research)"
+            ),
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+        },
+    )
+    response.raise_for_status()
+    try:
+        root = ET.fromstring(response.text)
+    except ParseError as exc:
+        raise RuntimeError(f"Yahoo RSS parse failed: {exc}") from exc
+
+    items: list[dict[str, str]] = []
+    for node in root.findall("./channel/item"):
+        title = (node.findtext("title") or "").strip()
+        link = (node.findtext("link") or "").strip()
+        summary = (node.findtext("description") or "").strip()
+        pub = (node.findtext("pubDate") or "").strip()
+        date = ""
+        if pub:
+            try:
+                date = parsedate_to_datetime(pub).astimezone(UTC).strftime("%Y-%m-%d")
+            except (TypeError, ValueError, IndexError, OverflowError):
+                date = pub[:10]
+        if not title:
+            continue
+        items.append(
+            {
+                "source": "yahoo_rss",
+                "date": date,
+                "headline": title,
+                "summary": summary,
+                "url": link,
+                "publisher": "Yahoo Finance",
+            }
+        )
+        if len(items) >= max(limit * 5, 25):
+            break
+    return items
+
+
+def _news_from_yahoo(ticker: str, *, limit: int = 5) -> list[dict[str, str]]:
+    """Yahoo headlines: quote API first, then RSS when yfinance returns nothing."""
+    items = _news_from_yahoo_quote(ticker, limit=limit)
+    if items:
+        return items
+    items = _news_from_yahoo_rss(ticker, limit=limit)
     if not items:
         raise RuntimeError("Yahoo returned no news")
     return items
@@ -296,6 +357,16 @@ def get_news(ticker: str, *, limit: int = 6) -> dict[str, Any]:
     articles, dropped = filter_ticker_relevant_articles(
         raw_articles, symbol, limit=limit
     )
+    # Symbol-scoped Yahoo RSS is already ticker-filtered by Yahoo; if alias
+    # matching drops everything, keep the top RSS headlines rather than UNAVAILABLE.
+    if not articles and provider in {"yahoo", "yahoo_rss"} and raw_articles:
+        articles = [
+            dict(item) for item in raw_articles[:limit] if item.get("headline")
+        ]
+        dropped = max(0, len(raw_articles) - len(articles))
+        provider = "yahoo_rss" if any(
+            a.get("source") == "yahoo_rss" for a in articles
+        ) else provider
     for article in articles:
         article["scope"] = "ticker"
 

@@ -8,22 +8,28 @@ The web UI also includes **Guide** (product help chat) and hover explanations on
 
 ---
 
+
+
 ## What you get
 
-| Area | What it does |
-| --- | --- |
-| Forecast | Champion path from trained models (or a persistence fallback). Drawn on the chart with history. |
-| Performance Analyst | Trend label and note grounded in the forecast path. Trend must match the numbers. |
-| Market Expert | News tone and briefing from recent headlines. Returns `UNAVAILABLE` when nothing useful is found. |
-| Financial Analyst | Fundamentals health, strengths, and weaknesses from a company snapshot. Does not invent statement figures. |
-| Risk Analyst | Contained / Moderate / Elevated downside note from coded volatility, drawdown, news, financials, and forecast trust. |
-| Report / Research brief | Stance-locked synthesis of the four specialist notes (executive summary, bull/bear, drivers, caveats). |
-| Summary chips | Trend, News, Confidence, Risk, Projected move — with short explanations available on hover. |
-| Guide | In-app assistant for how the desk works (agents, labels, UI). Out of scope for ticker picks and trading advice. |
-| On your desk | In-session list of finished tickers for this browser visit (clears on refresh). |
-| Analyze cache | Optional Redis cache for repeated tickers. UI badge + **Refresh analysis** to force a new run. |
+
+| Area                    | What it does                                                                                                         |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Forecast                | Champion path from trained models (or a persistence fallback). Drawn on the chart with history.                      |
+| Performance Analyst     | Trend label and note grounded in the forecast path. Trend must match the numbers.                                    |
+| Market Expert           | News tone and briefing from recent headlines. Returns `UNAVAILABLE` when nothing useful is found.                    |
+| Financial Analyst       | Fundamentals health, strengths, and weaknesses from a company snapshot. Does not invent statement figures.           |
+| Risk Analyst            | Contained / Moderate / Elevated downside note from coded volatility, drawdown, news, financials, and forecast trust. |
+| Report / Research brief | Stance-locked synthesis of the four specialist notes (executive summary, bull/bear, drivers, caveats).               |
+| Summary chips           | Trend, News, Confidence, Risk, Projected move — with short explanations available on hover.                          |
+| Guide                   | In-app assistant for how the desk works (agents, labels, UI). Out of scope for ticker picks and trading advice.      |
+| On your desk            | In-session list of finished tickers for this browser visit (clears on refresh).                                      |
+| Analyze cache           | Optional Redis cache for repeated tickers. UI badge + **Refresh analysis** to force a new run.                       |
+
 
 ---
+
+
 
 ## Prerequisites
 
@@ -37,7 +43,11 @@ The web UI also includes **Guide** (product help chat) and hover explanations on
 
 ---
 
+
+
 ## Clone and run
+
+
 
 ### 1. Clone
 
@@ -45,6 +55,8 @@ The web UI also includes **Guide** (product help chat) and hover explanations on
 git clone https://github.com/harishkulkarni10/stock-intelligence-platform.git
 cd stock-intelligence-platform
 ```
+
+
 
 ### 2. Environment
 
@@ -71,7 +83,7 @@ Edit `.env`. Minimum useful settings:
 ```env
 LLM_PROVIDER=google
 GOOGLE_API_KEY=your_key_here
-GOOGLE_MODEL=gemma-3-12b-it
+GOOGLE_MODEL=gemini-3.8-flash
 
 # Or local Ollama:
 # LLM_PROVIDER=ollama
@@ -83,6 +95,8 @@ If using Ollama, pull a chat model:
 ```bash
 ollama pull llama3.2:3b
 ```
+
+
 
 ### 3. Start the app
 
@@ -100,18 +114,22 @@ source .venv/bin/activate
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-Open **http://127.0.0.1:8000**
+Open **[http://127.0.0.1:8000](http://127.0.0.1:8000)**
 
-| Link | Purpose |
-| --- | --- |
-| http://127.0.0.1:8000 | Research desk UI |
-| http://127.0.0.1:8000/api | API route map |
-| http://127.0.0.1:8000/docs | OpenAPI docs |
-| `GET /ready` | Readiness check |
+
+| Link                                                     | Purpose          |
+| -------------------------------------------------------- | ---------------- |
+| [http://127.0.0.1:8000](http://127.0.0.1:8000)           | Research desk UI |
+| [http://127.0.0.1:8000/api](http://127.0.0.1:8000/api)   | API route map    |
+| [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) | OpenAPI docs     |
+| `GET /ready`                                             | Readiness check  |
+
 
 A full analyze run usually takes under a minute with a cloud LLM (forecast + three agents + chip explanations). Local Ollama can be slower.
 
 ---
+
+
 
 ## Using the UI
 
@@ -124,6 +142,8 @@ A full analyze run usually takes under a minute with a cloud LLM (forecast + thr
 7. Use **Refresh analysis** when you want a brand-new run instead of a recent saved result.
 
 ---
+
+
 
 ## Project layout
 
@@ -149,6 +169,8 @@ outputs/              Model artifacts (gitignored)
 
 ---
 
+
+
 ## CLI (no UI)
 
 From the project root with the venv active:
@@ -168,19 +190,27 @@ On macOS/Linux use `python scripts/run_analyze_agents.py ...`.
 
 ---
 
+
+
 ## Data / train / predict
 
-| Stage | Command |
-| --- | --- |
-| Build features | `sip-data build --tickers ^GSPC NVDA AAPL MSFT` |
-| Inspect store | `sip-data inspect` |
-| Train parent | `sip-train parent --source feature-store` |
-| Train child | `sip-train child --ticker NVDA --source feature-store` |
-| Predict | `sip-predict best --ticker NVDA --horizon 5` |
+
+| Stage          | Command                                                |
+| -------------- | ------------------------------------------------------ |
+| Build features | `sip-data build --tickers ^GSPC NVDA AAPL MSFT`        |
+| Inspect store  | `sip-data inspect`                                     |
+| Train parent   | `sip-train parent --source feature-store`              |
+| Train child    | `sip-train child --ticker NVDA --source feature-store` |
+| Predict        | `sip-predict best --ticker NVDA --horizon 5`           |
+
 
 ---
 
+
+
 ## API overview
+
+
 
 ### `POST /analyze`
 
@@ -220,6 +250,8 @@ Replies are grounded in a fixed product knowledge pack. Off-topic / trading ques
 
 ---
 
+
+
 ## Tests
 
 ```powershell
@@ -231,6 +263,8 @@ pytest -q
 ```
 
 ---
+
+
 
 ## Design notes
 
@@ -244,6 +278,8 @@ pytest -q
 - Structured JSON logs with request context for local and production runs.
 
 ---
+
+
 
 ## License
 

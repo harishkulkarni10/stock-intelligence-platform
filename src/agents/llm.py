@@ -93,8 +93,40 @@ def _messages_to_parts(messages: list[BaseMessage] | list) -> tuple[str | None, 
     return system, user
 
 
+def _is_gemma_model(model: str) -> bool:
+    return (model or "").strip().lower().startswith("gemma")
+
+
+def _is_transient_llm_error(exc: BaseException) -> bool:
+    """Google / network blips that often succeed on a short backoff retry."""
+    text = f"{type(exc).__name__} {exc}".lower()
+    needles = (
+        "500",
+        "503",
+        "429",
+        "internal",
+        "unavailable",
+        "resource_exhausted",
+        "resource exhausted",
+        "deadline",
+        "timed out",
+        "timeout",
+        "temporarily",
+        "connection reset",
+        "connection aborted",
+        "broken pipe",
+        "server error",
+        "internal error encountered",
+    )
+    return any(n in text for n in needles)
+
+
 class GoogleChatLLM:
-    """Google GenAI chat via chats.send_message (avoids Models.generate_content AFC warning)."""
+    """Google GenAI via models.generate_content (works for Gemini + hosted Gemma)."""
+
+    # Burst runs (ticker 2/3 after a success) often hit Google 500 INTERNAL.
+    _MAX_ATTEMPTS = 4
+    _BACKOFF_SEC = (0.6, 1.2, 2.4)
 
     def __init__(self, *, api_key: str, model: str, temperature: float) -> None:
         from google import genai
@@ -104,17 +136,91 @@ class GoogleChatLLM:
         self._model = model
         self._temperature = temperature
         self._client = genai.Client(api_key=api_key)
+        self._is_gemma = _is_gemma_model(model)
+
+    def _build_config(self, system: str | None, *, use_thinking: bool):
+        config_kwargs: dict = {"temperature": self._temperature}
+        if system and not self._is_gemma:
+            config_kwargs["system_instruction"] = system
+        if self._is_gemma and use_thinking:
+            try:
+                config_kwargs["thinking_config"] = self._types.ThinkingConfig(
+                    thinking_level="minimal"
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return self._types.GenerateContentConfig(**config_kwargs)
 
     def invoke(self, messages: list) -> AIMessage:
         system, user = _messages_to_parts(messages)
-        config_kwargs: dict = {"temperature": self._temperature}
-        if system:
-            config_kwargs["system_instruction"] = system
-        config = self._types.GenerateContentConfig(**config_kwargs)
+        # Gemma hosted docs use generate_content; fold system into the user turn
+        # if system_instruction is flaky for a given model build.
+        if system and self._is_gemma:
+            user = f"SYSTEM INSTRUCTIONS:\n{system}\n\nUSER:\n{user}"
+            system_for_config = None
+        else:
+            system_for_config = system
 
         started = time.perf_counter()
-        chat = self._client.chats.create(model=self._model, config=config)
-        response = chat.send_message(user)
+        warnings.filterwarnings(
+            "ignore",
+            message=r".*automatic function calling \(AFC\).*",
+            category=UserWarning,
+        )
+
+        last_error: BaseException | None = None
+        response = None
+        for attempt in range(1, self._MAX_ATTEMPTS + 1):
+            # After a Gemma failure, drop thinking_config — it is a known 500 trigger.
+            use_thinking = self._is_gemma and attempt == 1
+            config = self._build_config(system_for_config, use_thinking=use_thinking)
+            try:
+                response = self._client.models.generate_content(
+                    model=self._model,
+                    contents=user,
+                    config=config,
+                )
+                if attempt > 1:
+                    log_event(
+                        logger,
+                        "llm_transient_retry_ok",
+                        level=logging.WARNING,
+                        step="llm_call",
+                        status="ok",
+                        data={
+                            "model": self._model,
+                            "attempt": attempt,
+                            "prior_error": str(last_error)[:240] if last_error else "",
+                        },
+                    )
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                transient = _is_transient_llm_error(exc)
+                will_retry = attempt < self._MAX_ATTEMPTS and (
+                    transient or (self._is_gemma and attempt == 1)
+                )
+                log_event(
+                    logger,
+                    "llm_invoke_retry" if will_retry else "llm_invoke_failed",
+                    level=logging.WARNING,
+                    step="llm_call",
+                    status="retry" if will_retry else "error",
+                    data={
+                        "model": self._model,
+                        "attempt": attempt,
+                        "transient": transient,
+                        "error": str(exc)[:320],
+                    },
+                )
+                if not will_retry:
+                    raise
+                time.sleep(self._BACKOFF_SEC[min(attempt - 1, len(self._BACKOFF_SEC) - 1)])
+
+        if response is None:
+            assert last_error is not None
+            raise last_error
+
         duration_ms = (time.perf_counter() - started) * 1000
         text = getattr(response, "text", None) or str(response)
         log_event(
@@ -124,7 +230,7 @@ class GoogleChatLLM:
             status="ok",
             duration_ms=duration_ms,
             metrics={"chars": len(text or ""), "provider": "google"},
-            data={"model": self._model},
+            data={"model": self._model, "gemma": self._is_gemma},
         )
         return AIMessage(content=text)
 
@@ -135,10 +241,9 @@ def _google_llm():
         raise RuntimeError(
             "LLM_PROVIDER=google but GOOGLE_API_KEY is empty in .env"
         )
-    model = os.getenv("GOOGLE_MODEL", "gemma-3-12b-it")
+    model = os.getenv("GOOGLE_MODEL", "gemini-3.8-flash")
     temperature = float(os.getenv("GOOGLE_TEMPERATURE", "0.3"))
 
-    # Prefer Chat.send_message path; fall back to LangChain with warning filter.
     try:
         client = GoogleChatLLM(
             api_key=api_key, model=model, temperature=temperature
@@ -148,7 +253,12 @@ def _google_llm():
             "llm_client_ready",
             step="llm_init",
             status="ok",
-            data={"provider": "google", "model": model, "transport": "chats.send_message"},
+            data={
+                "provider": "google",
+                "model": model,
+                "transport": "models.generate_content",
+                "gemma": _is_gemma_model(model),
+            },
         )
         return client
     except Exception as primary:  # noqa: BLE001
