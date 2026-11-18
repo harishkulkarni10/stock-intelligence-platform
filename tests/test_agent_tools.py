@@ -55,6 +55,36 @@ def test_get_forecast_prefers_child(monkeypatch, tmp_path):
     assert "NVDA" in text.upper() or "nvda" in text.lower()
 
 
+def test_get_news_yahoo_quote_exception_uses_rss(monkeypatch):
+    """yfinance .news can raise YFDataException while RSS still works."""
+    monkeypatch.setattr(tools, "FINNHUB_API_KEY", None)
+
+    def quote_down(*args, **kwargs):
+        raise RuntimeError("*** YAHOO! FINANCE IS CURRENTLY DOWN! ***")
+
+    monkeypatch.setattr(tools, "_news_from_yahoo_quote", quote_down)
+    monkeypatch.setattr(
+        tools,
+        "_news_from_yahoo_rss",
+        lambda ticker, limit=5: [
+            {
+                "source": "yahoo_rss",
+                "date": "2026-11-18",
+                "headline": "NVIDIA expands data-center GPU shipments",
+                "summary": "Cloud demand",
+                "url": "https://example.com/nvda",
+                "publisher": "Yahoo Finance",
+            }
+        ],
+    )
+
+    result = tools.get_news("NVDA", limit=5)
+
+    assert result["status"] == "ok"
+    assert result["provider"] == "yahoo"
+    assert "NVIDIA" in result["articles"][0]["headline"]
+
+
 def test_get_news_falls_back_to_yahoo(monkeypatch):
     monkeypatch.setattr(tools, "FINNHUB_API_KEY", "fake-key")
 

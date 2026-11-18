@@ -106,7 +106,11 @@ def test_advice_question_detected():
 def test_no_run_returns_prompt():
     result = answer_research_question("Explain disagreement", run_context=None)
     assert result["mode"] == "research"
-    assert "No desk run" in result["reply"] or "No open run" in result["reply"]
+    assert (
+        "No desk run" in result["reply"]
+        or "No open run" in result["reply"]
+        or "Need a desk run" in result["reply"]
+    )
     assert result["out_of_scope"] is False
 
 
@@ -181,12 +185,8 @@ def test_resolve_chat_mode():
     packet = _sample_packet()
     assert resolve_chat_mode("guide", packet) == "guide"
     assert resolve_chat_mode("research", None) == "research"
-    assert resolve_chat_mode("auto", packet) == "research"
-    assert resolve_chat_mode("auto", None) == "guide"
-    assert (
-        resolve_chat_mode("auto", None, message="Latest headlines for TSLA")
-        == "research"
-    )
+    assert resolve_chat_mode("auto", packet) == "assistant"
+    assert resolve_chat_mode("auto", None) == "assistant"
 
 
 def test_select_tools_for_risk_question():
@@ -200,17 +200,18 @@ def test_help_chat_routes_research(monkeypatch):
     from fastapi.testclient import TestClient
 
     from backend.main import app
-    from src.agents import research_chat as research_mod
+    from src.agents import desk_assistant as assistant_mod
 
     monkeypatch.setattr(
-        research_mod,
-        "answer_research_question",
+        assistant_mod,
+        "answer_desk_assistant",
         lambda message, history=None, run_context=None, llm=None: {
             "reply": "### Disagreement\n- NEUTRAL vs POSITIVE",
             "out_of_scope": False,
-            "mode": "research",
+            "mode": "assistant",
             "repaired": False,
             "tools_used": ["compare_labels"],
+            "path": "research_llm",
         },
     )
     client = TestClient(app)
@@ -224,7 +225,7 @@ def test_help_chat_routes_research(monkeypatch):
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["mode"] == "research"
+    assert body["mode"] == "assistant"
     assert "POSITIVE" in body["reply"] or "NEUTRAL" in body["reply"]
     assert "wall_ms" in (body.get("meta") or {})
 

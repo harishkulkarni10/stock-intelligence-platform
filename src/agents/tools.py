@@ -300,7 +300,15 @@ def _news_from_yahoo_rss(ticker: str, *, limit: int = 5) -> list[dict[str, str]]
 
 def _news_from_yahoo(ticker: str, *, limit: int = 5) -> list[dict[str, str]]:
     """Yahoo headlines: quote API first, then RSS when yfinance returns nothing."""
-    items = _news_from_yahoo_quote(ticker, limit=limit)
+    items: list[dict[str, str]] = []
+    try:
+        items = _news_from_yahoo_quote(ticker, limit=limit)
+    except Exception as exc:  # noqa: BLE001 — yfinance often raises YFDataException when “down”
+        _log.warning(
+            "[news_tool] yahoo_quote_failed ticker=%s error=%s",
+            ticker,
+            str(exc)[:160],
+        )
     if items:
         return items
     items = _news_from_yahoo_rss(ticker, limit=limit)

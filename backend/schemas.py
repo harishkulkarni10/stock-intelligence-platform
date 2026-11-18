@@ -101,8 +101,8 @@ class HelpChatRequest(BaseModel):
     @classmethod
     def normalize_mode(cls, value: str) -> str:
         mode = (value or "auto").strip().lower()
-        if mode not in {"auto", "guide", "research"}:
-            raise ValueError("mode must be auto, guide, or research")
+        if mode not in {"auto", "guide", "research", "assistant"}:
+            raise ValueError("mode must be auto, guide, research, or assistant")
         return mode
 
 

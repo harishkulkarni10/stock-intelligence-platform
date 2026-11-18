@@ -8,15 +8,15 @@ from backend.main import app
 
 
 def test_help_chat_research_includes_meta_wall_ms(monkeypatch):
-    import src.agents.research_chat as research_mod
+    import src.agents.desk_assistant as assistant_mod
 
     monkeypatch.setattr(
-        research_mod,
-        "answer_research_question",
+        assistant_mod,
+        "answer_desk_assistant",
         lambda message, history=None, run_context=None, llm=None: {
             "reply": "### Baseline\n- ok",
             "out_of_scope": False,
-            "mode": "research",
+            "mode": "assistant",
             "repaired": False,
             "tools_used": ["get_news"],
             "path": "live_news",
@@ -40,21 +40,25 @@ def test_help_chat_research_includes_meta_wall_ms(monkeypatch):
 
 
 def test_help_chat_guide_meta_wall_ms_only(monkeypatch):
-    import src.agents.help_chat as help_mod
+    import src.agents.desk_assistant as assistant_mod
 
     monkeypatch.setattr(
-        help_mod,
-        "answer_help_question",
-        lambda message, history=None, llm=None: {
+        assistant_mod,
+        "answer_desk_assistant",
+        lambda message, history=None, run_context=None, llm=None: {
             "reply": "### Guide\n- ok",
             "out_of_scope": False,
+            "mode": "assistant",
+            "tools_used": [],
+            "repaired": False,
+            "path": "product_guide",
         },
     )
     client = TestClient(app)
     response = client.post(
-        "/help-chat", json={"message": "What is agent 1?", "mode": "guide"}
+        "/help-chat", json={"message": "What does the Performance analyst do?"}
     )
     body = response.json()
     meta = body.get("meta") or {}
     assert "wall_ms" in meta
-    assert "path" not in meta
+    assert meta.get("path") in (None, "product_guide")

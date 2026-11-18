@@ -40,8 +40,22 @@ _NEWS_HINT_RE = re.compile(
     r"(?i)\b("
     r"news|headline|headlines|article|articles|press|coverage|"
     r"sentiment|what(?:'s| is) (?:going on|happening)|"
-    r"latest (?:on|about)|recent (?:news|headlines|coverage)"
+    r"latest (?:on|about|hot)|recent (?:news|headlines|coverage)|"
+    r"hot news|past week|this morning|today and for"
     r")\b"
+)
+_CLAIM_OR_EVENT_RE = re.compile(
+    r"(?i)\b("
+    r"bankrupt|bankruptcy|delist|delisting|"
+    r"market cap|wiped|halved|cut in half|"
+    r"fired|firings|ceo\b|chief executive|"
+    r"jensen huang|according to (?:the )?news|"
+    r"true or false|is it true"
+    r")\b"
+)
+_LIVE_NEXT = (
+    "NEXT: Latest headlines for {ticker}|Explain disagreement|Walk through Risk|"
+    "Why this confidence?|Forecast path"
 )
 # Simple “give me headlines” asks — skip the second Research LLM after harness.
 _SIMPLE_HEADLINES_ASK_RE = re.compile(
@@ -234,11 +248,63 @@ NEWS_UNAVAILABLE = (
 
 
 def is_news_question(message: str) -> bool:
-    return bool(_NEWS_HINT_RE.search(message or ""))
+    return wants_live_news(message)
+
+
+_DESK_PACKET_QA_RE = re.compile(
+    r"(?i)\b("
+    r"explain disagreement|walk through risk|why this confidence|"
+    r"why is stance|why neutral|why bullish|why bearish|"
+    r"forecast path|projected move|on this run|this run|"
+    r"disagreement across|bull vs bear"
+    r")\b"
+)
+_LIVE_REFRESH_RE = re.compile(
+    r"(?i)\b("
+    r"latest|recent|headlines?|hot news|past week|today|"
+    r"this morning|live |according to (?:the )?news|coverage"
+    r")\b"
+)
+
+
+def wants_live_news(message: str) -> bool:
+    """Live headlines / claims / news events — prefer live fetch over desk packet."""
+    text = message or ""
+    if _DESK_PACKET_QA_RE.search(text) and not _LIVE_REFRESH_RE.search(text):
+        return False
+    if _NEWS_HINT_RE.search(text):
+        return True
+    if _CLAIM_OR_EVENT_RE.search(text):
+        return True
+    if re.search(r"(?i)\b(earnings|outlook beat|after.?hours)\b", text):
+        return True
+    return False
 
 
 def _normalize_phrase(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
+def resolve_ticker_from_context(
+    message: str,
+    history: list[dict[str, str]] | None = None,
+    *,
+    active_ticker: str | None = None,
+) -> str | None:
+    """Ticker from question, then recent chat, then active desk view."""
+    ticker = resolve_ticker_from_question(message)
+    if ticker:
+        return ticker
+    if _CLAIM_OR_EVENT_RE.search(message or "") and active_ticker:
+        return active_ticker.upper()
+    for turn in reversed(history or []):
+        role = (turn.get("role") or "").strip().lower()
+        if role not in ("user", "assistant"):
+            continue
+        ticker = resolve_ticker_from_question(turn.get("content") or "")
+        if ticker:
+            return ticker
+    return None
 
 
 def resolve_ticker_from_question(message: str) -> str | None:
@@ -292,30 +358,45 @@ def _article_allowlist(news: dict[str, Any]) -> tuple[list[str], list[str]]:
     return titles, urls
 
 
+def _live_next_chips(ticker: str) -> str:
+    return _LIVE_NEXT.format(ticker=ticker)
+
+
 def _deterministic_news_reply(
     *,
     ticker: str,
     sentiment: str,
     note: str,
     news: dict[str, Any],
+    compact: bool = False,
 ) -> str:
     titles, _ = _article_allowlist(news)
     bullets = "\n".join(f"- {t}" for t in titles[:6]) or "- No headlines kept."
+    if compact:
+        return (
+            f"### Live news · {ticker}\n"
+            f"Source: live fetch (fresh headlines, not the saved desk packet).\n"
+            f"Headline tone: {sentiment or '—'}.\n\n"
+            f"### Headlines\n"
+            f"{bullets}\n\n"
+            f"### Caveat\n"
+            f"Research support only — not trade advice.\n\n"
+            f"{_live_next_chips(ticker)}"
+        )
     note_clip = (note or "").strip()
-    if len(note_clip) > 900:
-        note_clip = note_clip[:899] + "…"
+    if len(note_clip) > 500:
+        note_clip = note_clip[:499] + "…"
     return (
         f"### Live news · {ticker}\n"
-        f"Source: live fetch (not a desk run packet). "
-        f"Headline tone from the Market expert: {sentiment or '—'}.\n\n"
-        f"### Specialist note\n"
-        f"{note_clip or 'No specialist note produced.'}\n\n"
-        f"### Headlines used\n"
+        f"Source: live fetch (fresh headlines, not the saved desk packet). "
+        f"Headline tone: {sentiment or '—'}.\n\n"
+        f"### Summary\n"
+        f"{note_clip or 'See headlines below.'}\n\n"
+        f"### Headlines\n"
         f"{bullets}\n\n"
         f"### Caveat\n"
-        f"Research support only — not trade advice. "
-        f"This is live news, not a full multi-agent analyze run.\n\n"
-        f"{_DEFAULT_NEXT}"
+        f"Research support only — not trade advice.\n\n"
+        f"{_live_next_chips(ticker)}"
     )
 
 
@@ -400,8 +481,11 @@ Rules:
 - Say clearly this is live news, not a finished desk packet.
 - ### headings and - bullets. No bold/italics.
 - No buy/sell advice.
+- If the user asks about CEO, firing, bankruptcy, delisting, or huge revenue figures:
+  only affirm if a headline explicitly supports it; otherwise say it is NOT in this fetch.
+- Never invent leadership changes (e.g. Jensen Huang) not present in Allowed titles.
 - End with:
-{_DEFAULT_NEXT}
+{_live_next_chips(ticker)}
 """
     messages: list = [SystemMessage(content=system)]
     for turn in (history or [])[-4:]:
@@ -428,6 +512,25 @@ Rules:
     return message_text(llm.invoke(messages)).strip()
 
 
+def _reply_fails_headline_grounding(reply: str, titles: list[str]) -> bool:
+    blob = " ".join(titles).lower()
+    low = (reply or "").lower()
+    if not blob:
+        return False
+    if ("jensen" in low or "huang" in low) and (
+        "jensen" not in blob and "huang" not in blob
+    ):
+        return True
+    if re.search(r"\$\s*\d", reply or "") and "$" not in blob and "billion" not in blob:
+        if re.search(r"\d{2,}[^%]", reply or ""):
+            return True
+    if "fired" in low and "fire" not in blob and "fired" not in blob:
+        return True
+    if "bankrupt" in low and "bankrupt" not in blob:
+        return True
+    return False
+
+
 def answer_live_news_question(
     message: str,
     history: list[dict[str, str]] | None = None,
@@ -435,8 +538,9 @@ def answer_live_news_question(
     llm=None,
     news_fetcher=None,
     news_harness=None,
+    active_ticker: str | None = None,
 ) -> dict[str, Any]:
-    """Live news research path for empty-desk (or off-desk) questions."""
+    """Live news path — used even when a desk packet exists (fresh headlines)."""
     text = (message or "").strip()
     tools_used: list[str] = []
 
@@ -459,7 +563,20 @@ def answer_live_news_question(
             "path": "advice",
         }
 
-    ticker = resolve_ticker_from_question(text)
+    bare = text.strip().lower()
+    if bare in ("news", "headlines", "coverage"):
+        return {
+            "reply": NEED_TICKER_NEWS,
+            "out_of_scope": False,
+            "mode": "research",
+            "tools_used": [],
+            "repaired": False,
+            "path": "need_ticker",
+        }
+
+    ticker = resolve_ticker_from_context(
+        text, history, active_ticker=active_ticker
+    )
     if not ticker:
         return {
             "reply": NEED_TICKER_NEWS,
@@ -543,6 +660,7 @@ def answer_live_news_question(
             sentiment=sentiment,
             note=agent_note,
             news=news,
+            compact=True,
         )
         log_event(
             logger,
@@ -586,6 +704,9 @@ def answer_live_news_question(
             )
         )
         ok, errors = _validate_live_news_reply(cleaned, titles=titles, urls=urls)
+        if ok and _reply_fails_headline_grounding(cleaned, titles):
+            ok = False
+            errors = errors + ["headline_grounding"]
         if not ok:
             repaired = True
             reply = _deterministic_news_reply(
@@ -593,6 +714,7 @@ def answer_live_news_question(
                 sentiment=sentiment,
                 note=agent_note,
                 news=news,
+                compact=_is_simple_headlines_ask(text),
             )
             log_event(
                 logger,

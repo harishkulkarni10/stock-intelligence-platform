@@ -708,6 +708,7 @@ def evaluate_research_fixtures() -> dict[str, Any]:
                 and (
                     "No open run" in empty["reply"]
                     or "No desk run" in empty["reply"]
+                    or "Need a desk run" in empty["reply"]
                 )
             ),
         }

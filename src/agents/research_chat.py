@@ -41,6 +41,7 @@ from src.agents.research_live_news import (
     answer_live_news_question,
     is_news_question,
     resolve_ticker_from_question,
+    wants_live_news,
 )
 from src.agents.research_tools import (
     DeskContext,
@@ -188,28 +189,52 @@ def answer_research_question(
     text = (message or "").strip()
     desk = normalize_desk_context(run_context)
 
-    # Empty desk (or off-desk ticker): live news path when the question is about news.
+    if is_advice_meta_question(text):
+        return {
+            "reply": ADVICE_META,
+            "out_of_scope": True,
+            "mode": "research",
+            "tools_used": [],
+            "repaired": False,
+            "path": "advice_meta",
+        }
+
+    if is_advice_question(text):
+        return {
+            "reply": OUT_OF_SCOPE,
+            "out_of_scope": True,
+            "mode": "research",
+            "tools_used": [],
+            "repaired": False,
+            "path": "advice",
+        }
+
+    if text and wants_live_news(text):
+        active = desk.active_ticker if desk else None
+        return answer_live_news_question(
+            text,
+            history,
+            llm=llm,
+            active_ticker=active,
+        )
+
     if not desk:
-        if text and is_news_question(text):
-            return answer_live_news_question(text, history, llm=llm)
         return {
             "reply": (
                 NO_RUN
                 if not text
                 else (
-                    "### No desk run yet\n"
-                    "For full packet Q&A (stance, confidence, Risk disagreement), "
-                    "run agents on the desk first.\n\n"
-                    "### What works without a run\n"
-                    "- Ask live news questions naming a ticker or company "
-                    "(e.g. Latest headlines for TSLA)\n\n"
-                    "NEXT: Latest news for TSLA|What this desk is"
+                    "### Need a desk run for this question\n"
+                    "Ask live news with a ticker (e.g. Latest headlines for TSLA), "
+                    "or run analyze on the desk for stance, confidence, and Risk Q&A.\n\n"
+                    "NEXT: Latest headlines for TSLA|What does the Performance analyst do?"
                 )
             ),
             "out_of_scope": False,
             "mode": "research",
             "tools_used": [],
             "repaired": False,
+            "path": "need_desk_or_news",
         }
 
     named = mentioned_desk_tickers(text, desk) if text else []
@@ -218,15 +243,7 @@ def answer_research_question(
     )
     packet = desk.get(targets[0]) if targets else desk.get(desk.active_ticker)
 
-    # News about a ticker that is not on the desk → live news (do not force a miss).
-    if text and is_news_question(text):
-        live_ticker = resolve_ticker_from_question(text)
-        if live_ticker and live_ticker not in desk.packets:
-            return answer_live_news_question(text, history, llm=llm)
-
     if not packet:
-        if text and is_news_question(text):
-            return answer_live_news_question(text, history, llm=llm)
         return {
             "reply": NO_RUN,
             "out_of_scope": False,
@@ -245,31 +262,6 @@ def answer_research_question(
             "out_of_scope": False,
             "mode": "research",
             "tools_used": overview_tools,
-            "repaired": False,
-        }
-
-    if is_advice_meta_question(text):
-        return {
-            "reply": ADVICE_META,
-            "out_of_scope": True,
-            "mode": "research",
-            "tools_used": [],
-            "repaired": False,
-        }
-
-    if is_advice_question(text):
-        log_event(
-            logger,
-            "research_out_of_scope",
-            step="research_chat",
-            status="ok",
-            data={"reason": "advice_question", "ticker": packet.get("ticker")},
-        )
-        return {
-            "reply": OUT_OF_SCOPE,
-            "out_of_scope": True,
-            "mode": "research",
-            "tools_used": [],
             "repaired": False,
         }
 
@@ -528,17 +520,8 @@ def resolve_chat_mode(
     run_context: dict[str, Any] | None,
     message: str | None = None,
 ) -> str:
-    """Return 'guide' or 'research'."""
+    """Legacy mode flag — unified assistant uses desk_assistant; auto → assistant."""
     mode = (requested or "auto").strip().lower()
-    has_run = normalize_desk_context(run_context) is not None
-    if mode == "research":
-        return "research"
-    if mode == "guide":
-        return "guide"
-    # auto: desk packet → research; else live-news questions → research
-    if has_run:
-        return "research"
-    text = (message or "").strip()
-    if text and is_news_question(text) and resolve_ticker_from_question(text):
-        return "research"
-    return "guide"
+    if mode in ("guide", "research"):
+        return mode
+    return "assistant"

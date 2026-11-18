@@ -2344,7 +2344,7 @@ function wireHelpChat() {
   let welcomed = false;
   let activeController = null;
   let activePending = null;
-  let chatMode = "guide";
+  const chatMode = "auto";
 
   const guideMarkSvg =
     '<svg class="help-diamond" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">' +
@@ -2372,52 +2372,24 @@ function wireHelpChat() {
 
   function refreshSuggestionVisibility() {
     if (!suggestions) return;
-    suggestions.querySelectorAll("[data-mode]").forEach((btn) => {
-      const forMode = btn.getAttribute("data-mode");
-      const show = forMode === chatMode;
-      btn.hidden = !show;
+    suggestions.querySelectorAll("[data-help-q]").forEach((btn) => {
+      btn.hidden = false;
     });
   }
 
   function syncHelpChrome() {
-    if (modeBar) {
-      modeBar.hidden = false;
-      modeBar.querySelectorAll("[data-help-mode]").forEach((chip) => {
-        const mode = chip.getAttribute("data-help-mode");
-        chip.classList.toggle("is-active", mode === chatMode);
-        if (mode === "research") {
-          // Research works with desk packets OR live news (no run required).
-          chip.disabled = false;
-          chip.title = hasOpenRun()
-            ? "Ask about desk runs or live news for any ticker"
-            : "Ask live news for any ticker — or run agents for full packet Q&A";
-        }
-      });
-    }
-    const label = chatMode === "research" ? "Research" : "Guide";
+    if (modeBar) modeBar.hidden = true;
+    const label = "Assistant";
     if (titleEl) titleEl.textContent = label;
-    if (emptyTitle) {
-      emptyTitle.textContent =
-        chatMode === "research" ? "Ask Research" : "Ask Guide";
-    }
+    if (emptyTitle) emptyTitle.textContent = "Ask the desk assistant";
     if (toggleLabel) toggleLabel.textContent = label;
     if (input) {
-      input.placeholder =
-        chatMode === "research"
-          ? hasOpenRun()
-            ? "Ask about desk runs or live news…"
-            : "Ask live news for any ticker…"
-          : "Ask Guide…";
+      input.placeholder = hasOpenRun()
+        ? "News, desk packets, or how to use the product…"
+        : "Live news for any ticker, or product help…";
     }
-    if (toggle) {
-      toggle.title = chatMode === "research" ? "Ask Research Co-Pilot" : "Ask Guide";
-    }
+    if (toggle) toggle.title = "Ask the desk assistant";
     refreshSuggestionVisibility();
-  }
-
-  function setChatMode(mode) {
-    chatMode = mode === "research" ? "research" : "guide";
-    syncHelpChrome();
   }
 
   function setSendingUi(on) {
@@ -2443,10 +2415,6 @@ function wireHelpChat() {
     panel.classList.toggle("hidden", !open);
     toggle.setAttribute("aria-expanded", open ? "true" : "false");
     if (open) {
-      if (hasOpenRun() && chatMode !== "research") {
-        // Prefer Research when a run is on the desk.
-        chatMode = "research";
-      }
       syncHelpChrome();
       if (!welcomed) {
         setSuggestionsVisible(true);
@@ -2528,7 +2496,7 @@ function wireHelpChat() {
     const controller = new AbortController();
     activeController = controller;
     // Live news does get_news + Market harness LLM + Research LLM (~60–120s).
-    const helpChatTimeoutMs = chatMode === "research" ? 180000 : 90000;
+    const helpChatTimeoutMs = 180000;
     const timeoutId = window.setTimeout(
       () => controller.abort("timeout"),
       helpChatTimeoutMs
@@ -2537,11 +2505,9 @@ function wireHelpChat() {
     const body = {
       message: q,
       history: history.slice(-6),
-      mode: chatMode,
+      mode: "auto",
+      analyze_context: buildDeskAnalyzeContext(),
     };
-    if (chatMode === "research") {
-      body.analyze_context = buildDeskAnalyzeContext();
-    }
 
     try {
       const response = await fetch(`${API_BASE}/help-chat`, {
@@ -2576,9 +2542,7 @@ function wireHelpChat() {
           pending.classList.remove("pending");
           pending.innerHTML = "";
           pending.textContent =
-            chatMode === "research"
-              ? "Timed out waiting for Research (live news can take up to ~3 min). Try again."
-              : "Timed out waiting for Guide. Try again.";
+            "Timed out waiting for the assistant (live news can take up to ~3 min). Try again.";
           scrollToRowStart(row);
         } else if (activePending && activePending.row && activePending.row.parentNode) {
           activePending.row.remove();
@@ -2610,13 +2574,6 @@ function wireHelpChat() {
   document.querySelectorAll("[data-open-help]").forEach((btn) => {
     btn.addEventListener("click", () => setOpen(true));
   });
-  if (modeBar) {
-    modeBar.addEventListener("click", (event) => {
-      const chip = event.target.closest("[data-help-mode]");
-      if (!chip || chip.disabled) return;
-      setChatMode(chip.getAttribute("data-help-mode"));
-    });
-  }
   if (suggestions) {
     suggestions.addEventListener("click", (event) => {
       const btn = event.target.closest("[data-help-q]");

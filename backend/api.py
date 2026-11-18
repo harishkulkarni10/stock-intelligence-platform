@@ -187,37 +187,21 @@ async def help_chat(request: HelpChatRequest) -> HelpChatResponse:
     wall_start = time.perf_counter()
 
     def run() -> dict[str, Any]:
-        from src.agents.help_chat import answer_help_question
-        from src.agents.research_chat import answer_research_question, resolve_chat_mode
+        from src.agents.desk_assistant import answer_desk_assistant
 
         history = [item.model_dump() for item in request.history[-6:]]
-        mode = resolve_chat_mode(
-            request.mode,
+        result = answer_desk_assistant(
+            request.message,
+            history,
             request.analyze_context,
-            message=request.message,
         )
-        if mode == "research":
-            result = answer_research_question(
-                request.message,
-                history,
-                request.analyze_context,
-            )
-            return {
-                "reply": result.get("reply") or "",
-                "out_of_scope": bool(result.get("out_of_scope")),
-                "mode": "research",
-                "repaired": bool(result.get("repaired")),
-                "tools_used": list(result.get("tools_used") or []),
-                "_agent_result": result,
-            }
-        guide = answer_help_question(request.message, history)
         return {
-            "reply": guide.get("reply") or "",
-            "out_of_scope": bool(guide.get("out_of_scope")),
-            "mode": "guide",
-            "repaired": False,
-            "tools_used": [],
-            "_agent_result": {},
+            "reply": result.get("reply") or "",
+            "out_of_scope": bool(result.get("out_of_scope")),
+            "mode": result.get("mode") or "assistant",
+            "repaired": bool(result.get("repaired")),
+            "tools_used": list(result.get("tools_used") or []),
+            "_agent_result": result,
         }
 
     ctx = contextvars.copy_context()
