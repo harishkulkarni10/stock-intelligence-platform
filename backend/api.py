@@ -182,13 +182,20 @@ def task_status(task_id: str) -> TaskStatus:
 @router.post("/help-chat", response_model=HelpChatResponse)
 async def help_chat(request: HelpChatRequest) -> HelpChatResponse:
     _limit("help-chat", "global")
+    import time
+
+    wall_start = time.perf_counter()
 
     def run() -> dict[str, Any]:
         from src.agents.help_chat import answer_help_question
         from src.agents.research_chat import answer_research_question, resolve_chat_mode
 
         history = [item.model_dump() for item in request.history[-6:]]
-        mode = resolve_chat_mode(request.mode, request.analyze_context)
+        mode = resolve_chat_mode(
+            request.mode,
+            request.analyze_context,
+            message=request.message,
+        )
         if mode == "research":
             result = answer_research_question(
                 request.message,
@@ -201,6 +208,7 @@ async def help_chat(request: HelpChatRequest) -> HelpChatResponse:
                 "mode": "research",
                 "repaired": bool(result.get("repaired")),
                 "tools_used": list(result.get("tools_used") or []),
+                "_agent_result": result,
             }
         guide = answer_help_question(request.message, history)
         return {
@@ -209,13 +217,25 @@ async def help_chat(request: HelpChatRequest) -> HelpChatResponse:
             "mode": "guide",
             "repaired": False,
             "tools_used": [],
+            "_agent_result": {},
         }
 
     ctx = contextvars.copy_context()
-    result = await asyncio.get_running_loop().run_in_executor(
+    raw = await asyncio.get_running_loop().run_in_executor(
         state.executor, lambda: ctx.run(run)
     )
-    return HelpChatResponse.model_validate(result)
+    wall_ms = round((time.perf_counter() - wall_start) * 1000, 2)
+    agent = raw.pop("_agent_result", None) or {}
+    meta: dict[str, Any] = {"wall_ms": wall_ms}
+    for key in ("path", "ticker", "fast_path"):
+        if agent.get(key) is not None:
+            meta[key] = agent[key]
+    if agent.get("data") and isinstance(agent.get("data"), dict):
+        fast = agent["data"].get("fast_path")
+        if fast:
+            meta["fast_path"] = fast
+    raw["meta"] = meta
+    return HelpChatResponse.model_validate(raw)
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)

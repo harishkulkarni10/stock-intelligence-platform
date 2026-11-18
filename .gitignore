@@ -46,3 +46,6 @@ frontendtesting/
 # Local-only / not part of SIP web desk
 Stock-Forecasting-Research/
 frontend/pro/
+
+# Local agentic Research phase plan + per-phase dev logs (not committed)
+phases/

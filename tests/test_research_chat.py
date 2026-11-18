@@ -106,7 +106,7 @@ def test_advice_question_detected():
 def test_no_run_returns_prompt():
     result = answer_research_question("Explain disagreement", run_context=None)
     assert result["mode"] == "research"
-    assert "No open run" in result["reply"]
+    assert "No desk run" in result["reply"] or "No open run" in result["reply"]
     assert result["out_of_scope"] is False
 
 
@@ -183,6 +183,10 @@ def test_resolve_chat_mode():
     assert resolve_chat_mode("research", None) == "research"
     assert resolve_chat_mode("auto", packet) == "research"
     assert resolve_chat_mode("auto", None) == "guide"
+    assert (
+        resolve_chat_mode("auto", None, message="Latest headlines for TSLA")
+        == "research"
+    )
 
 
 def test_select_tools_for_risk_question():
@@ -222,6 +226,7 @@ def test_help_chat_routes_research(monkeypatch):
     body = response.json()
     assert body["mode"] == "research"
     assert "POSITIVE" in body["reply"] or "NEUTRAL" in body["reply"]
+    assert "wall_ms" in (body.get("meta") or {})
 
 
 def test_evaluate_research_fixtures():

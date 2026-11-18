@@ -698,12 +698,18 @@ def evaluate_research_fixtures() -> dict[str, Any]:
         }
     )
 
-    # No-run behavior
+    # No-run behavior (packet Q&A blocked; live news still available as a tip)
     empty = answer_research_question("Explain disagreement", run_context=None)
     rows.append(
         {
             "id": "research_no_run",
-            "pass": "No open run" in empty["reply"] and empty["out_of_scope"] is False,
+            "pass": (
+                empty["out_of_scope"] is False
+                and (
+                    "No open run" in empty["reply"]
+                    or "No desk run" in empty["reply"]
+                )
+            ),
         }
     )
 

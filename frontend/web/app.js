@@ -2380,34 +2380,33 @@ function wireHelpChat() {
   }
 
   function syncHelpChrome() {
-    const researchReady = hasOpenRun();
     if (modeBar) {
       modeBar.hidden = false;
       modeBar.querySelectorAll("[data-help-mode]").forEach((chip) => {
         const mode = chip.getAttribute("data-help-mode");
         chip.classList.toggle("is-active", mode === chatMode);
         if (mode === "research") {
-          chip.disabled = !researchReady;
-          chip.title = researchReady
-            ? "Ask about any finished run on this desk"
-            : "Run agents first";
+          // Research works with desk packets OR live news (no run required).
+          chip.disabled = false;
+          chip.title = hasOpenRun()
+            ? "Ask about desk runs or live news for any ticker"
+            : "Ask live news for any ticker — or run agents for full packet Q&A";
         }
       });
-    }
-    if (!researchReady && chatMode === "research") {
-      chatMode = "guide";
     }
     const label = chatMode === "research" ? "Research" : "Guide";
     if (titleEl) titleEl.textContent = label;
     if (emptyTitle) {
       emptyTitle.textContent =
-        chatMode === "research" ? "Ask about desk runs" : "Ask Guide";
+        chatMode === "research" ? "Ask Research" : "Ask Guide";
     }
     if (toggleLabel) toggleLabel.textContent = label;
     if (input) {
       input.placeholder =
         chatMode === "research"
-          ? "Ask about any desk ticker…"
+          ? hasOpenRun()
+            ? "Ask about desk runs or live news…"
+            : "Ask live news for any ticker…"
           : "Ask Guide…";
     }
     if (toggle) {
@@ -2417,7 +2416,6 @@ function wireHelpChat() {
   }
 
   function setChatMode(mode) {
-    if (mode === "research" && !hasOpenRun()) return;
     chatMode = mode === "research" ? "research" : "guide";
     syncHelpChrome();
   }
@@ -2518,9 +2516,6 @@ function wireHelpChat() {
   async function askQuestion(question) {
     const q = (question || "").trim();
     if (!q || sending) return;
-    if (chatMode === "research" && !hasOpenRun()) {
-      setChatMode("guide");
-    }
     setSendingUi(true);
     input.value = "";
     setSuggestionsVisible(false);
@@ -2532,7 +2527,12 @@ function wireHelpChat() {
 
     const controller = new AbortController();
     activeController = controller;
-    const timeoutId = window.setTimeout(() => controller.abort("timeout"), 90000);
+    // Live news does get_news + Market harness LLM + Research LLM (~60–120s).
+    const helpChatTimeoutMs = chatMode === "research" ? 180000 : 90000;
+    const timeoutId = window.setTimeout(
+      () => controller.abort("timeout"),
+      helpChatTimeoutMs
+    );
 
     const body = {
       message: q,
@@ -2577,7 +2577,7 @@ function wireHelpChat() {
           pending.innerHTML = "";
           pending.textContent =
             chatMode === "research"
-              ? "Timed out waiting for Research. Try again."
+              ? "Timed out waiting for Research (live news can take up to ~3 min). Try again."
               : "Timed out waiting for Guide. Try again.";
           scrollToRowStart(row);
         } else if (activePending && activePending.row && activePending.row.parentNode) {

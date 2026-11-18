@@ -157,13 +157,13 @@ _FOREIGN_CONTEXT_RE = re.compile(
 
 NO_RUN = (
     "### No open run\n"
-    "Research mode needs a finished analysis on the desk.\n\n"
+    "Full packet Research needs a finished analysis on the desk.\n\n"
     "### What to do\n"
-    "- Search a ticker and run agents first\n"
-    "- Then ask about labels, disagreement, forecast path, or Risk on that run\n\n"
+    "- Ask live news for any ticker (e.g. Latest headlines for TSLA)\n"
+    "- Or search a ticker and run agents for stance / confidence / Risk Q&A\n\n"
     "### Tip\n"
     "Switch to Guide for product how-to questions anytime.\n\n"
-    "NEXT: How to read a run|What this desk is"
+    "NEXT: Latest news for TSLA|What this desk is"
 )
 
 _ADVICE_RE = re.compile(
