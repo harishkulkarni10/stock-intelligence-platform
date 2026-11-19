@@ -30,6 +30,8 @@ load_dotenv()
 
 FINNHUB_API_KEY = os.getenv("FMI_API_KEY") or os.getenv("FINNHUB_API_KEY")
 FINNHUB_URL = "https://finnhub.io/api/v1/company-news"
+NEWS_CHAT_DEFAULT_LIMIT = int(os.getenv("NEWS_CHAT_LIMIT", "12"))
+NEWS_DEFAULT_LOOKBACK_DAYS = int(os.getenv("NEWS_LOOKBACK_DAYS", "7"))
 _log = get_logger()
 
 # Company aliases for ticker relevance (Yahoo feeds are often unrelated).
@@ -169,6 +171,76 @@ def filter_ticker_relevant_articles(
     return relevant[:limit], dropped
 
 
+def _article_date_sort_key(article: dict[str, Any]) -> tuple[int, str]:
+    raw = str(
+        article.get("published")
+        or article.get("date")
+        or article.get("datetime")
+        or ""
+    )[:10]
+    if len(raw) >= 10 and raw[4] == "-":
+        return (0, raw)
+    return (1, raw)
+
+
+def filter_articles_by_lookback(
+    articles: list[dict[str, Any]],
+    *,
+    days: int,
+) -> list[dict[str, Any]]:
+    """Drop articles older than `days` when a YYYY-MM-DD date is present."""
+    if days < 1:
+        return articles
+    cutoff = datetime.now(UTC).date() - timedelta(days=days)
+    kept: list[dict[str, Any]] = []
+    for article in articles:
+        raw = str(
+            article.get("published")
+            or article.get("date")
+            or ""
+        )[:10]
+        if len(raw) >= 10 and raw[4] == "-":
+            try:
+                stamp = datetime.strptime(raw, "%Y-%m-%d").date()
+            except ValueError:
+                kept.append(article)
+                continue
+            if stamp >= cutoff:
+                kept.append(article)
+        else:
+            kept.append(article)
+    return kept if kept else articles
+
+
+def rank_articles_for_question(
+    articles: list[dict[str, Any]],
+    question: str | None,
+) -> list[dict[str, Any]]:
+    """Surface headlines that match the user focus (CEO, earnings, week recap)."""
+    q = (question or "").lower()
+    keywords: list[str] = []
+    if any(w in q for w in ("ceo", "jensen", "huang", "leadership", "fired", "resign", "interim")):
+        keywords.extend(
+            ("ceo", "jensen", "huang", "interim", "resign", "leadership", "return as")
+        )
+    if any(w in q for w in ("earning", "revenue", "beat", "forecast", "quarter")):
+        keywords.extend(("earnings", "revenue", "beat", "forecast", "quarter", "guidance"))
+    if any(w in q for w in ("delist", "bankrupt", "export")):
+        keywords.extend(("delist", "bankrupt", "export", "sanction"))
+    if not keywords:
+        return sorted(articles, key=_article_date_sort_key)
+
+    def score(article: dict[str, Any]) -> int:
+        blob = f"{article.get('headline') or ''} {article.get('summary') or ''}".lower()
+        return sum(4 if k in blob else 0 for k in keywords)
+
+    ranked = sorted(
+        articles,
+        key=lambda a: (-score(a), _article_date_sort_key(a)),
+    )
+    return ranked
+
+
 def _news_from_finnhub(ticker: str, *, limit: int = 5) -> list[dict[str, str]]:
     if not FINNHUB_API_KEY:
         raise RuntimeError("Finnhub API key not set")
@@ -293,7 +365,7 @@ def _news_from_yahoo_rss(ticker: str, *, limit: int = 5) -> list[dict[str, str]]
                 "publisher": "Yahoo Finance",
             }
         )
-        if len(items) >= max(limit * 5, 25):
+        if len(items) >= max(limit * 4, 40):
             break
     return items
 
@@ -317,11 +389,19 @@ def _news_from_yahoo(ticker: str, *, limit: int = 5) -> list[dict[str, str]]:
     return items
 
 
-def get_news(ticker: str, *, limit: int = 6) -> dict[str, Any]:
+def get_news(
+    ticker: str,
+    *,
+    limit: int = 6,
+    lookback_days: int | None = None,
+    focus_question: str | None = None,
+    include_peers: bool = True,
+) -> dict[str, Any]:
     """Fetch recent headlines for the ticker plus a few peer/competitor items.
 
-    Finnhub company-news first when keyed; Yahoo otherwise. Irrelevant Yahoo
-    market blurbs are dropped so agent 2 does not invent a ticker narrative.
+    Finnhub company-news first when keyed (7-day window); Yahoo RSS otherwise
+    (provider-dependent, often 1–2 days). Use higher limit and lookback_days
+    for live chat past-week asks.
     """
     symbol = normalize_ticker(ticker)
     errors: list[str] = []
@@ -335,9 +415,11 @@ def get_news(ticker: str, *, limit: int = 6) -> dict[str, Any]:
     raw_articles: list[dict[str, Any]] = []
     provider: str | None = None
 
+    fetch_limit = max(limit, limit * 2) if limit > 6 else max(limit * 3, 18)
+
     if FINNHUB_API_KEY:
         try:
-            raw_articles = _news_from_finnhub(symbol, limit=limit)
+            raw_articles = _news_from_finnhub(symbol, limit=fetch_limit)
             provider = "finnhub"
         except Exception as exc:  # noqa: BLE001 - fall through to Yahoo
             errors.append(f"finnhub: {exc}")
@@ -345,7 +427,7 @@ def get_news(ticker: str, *, limit: int = 6) -> dict[str, Any]:
 
     if not raw_articles:
         try:
-            raw_articles = _news_from_yahoo(symbol, limit=limit)
+            raw_articles = _news_from_yahoo(symbol, limit=fetch_limit)
             provider = "yahoo"
         except Exception as exc:  # noqa: BLE001 - surface both failures
             errors.append(f"yahoo: {exc}")
@@ -362,9 +444,15 @@ def get_news(ticker: str, *, limit: int = 6) -> dict[str, Any]:
                 "error": "; ".join(errors),
             }
 
+    if lookback_days:
+        raw_articles = filter_articles_by_lookback(
+            raw_articles, days=lookback_days
+        )
+
     articles, dropped = filter_ticker_relevant_articles(
-        raw_articles, symbol, limit=limit
+        raw_articles, symbol, limit=fetch_limit
     )
+    articles = rank_articles_for_question(articles, focus_question)[:limit]
     # Symbol-scoped Yahoo RSS is already ticker-filtered by Yahoo; if alias
     # matching drops everything, keep the top RSS headlines rather than UNAVAILABLE.
     if not articles and provider in {"yahoo", "yahoo_rss"} and raw_articles:
@@ -379,19 +467,20 @@ def get_news(ticker: str, *, limit: int = 6) -> dict[str, Any]:
         article["scope"] = "ticker"
 
     peer_kept: list[dict[str, Any]] = []
-    for peer in _PEER_TICKERS.get(symbol, ())[:3]:
-        try:
-            peer_raw = _news_from_yahoo(peer, limit=4)
-        except Exception as exc:  # noqa: BLE001 - peer news is optional context
-            errors.append(f"peer:{peer}:{exc}")
-            continue
-        kept, _ = filter_ticker_relevant_articles(peer_raw, peer, limit=2)
-        for article in kept:
-            article["scope"] = "peer"
-            article["peer_ticker"] = peer
-            peer_kept.append(article)
-        if len(peer_kept) >= 4:
-            break
+    if include_peers:
+        for peer in _PEER_TICKERS.get(symbol, ())[:3]:
+            try:
+                peer_raw = _news_from_yahoo(peer, limit=4)
+            except Exception as exc:  # noqa: BLE001 - peer news is optional context
+                errors.append(f"peer:{peer}:{exc}")
+                continue
+            kept, _ = filter_ticker_relevant_articles(peer_raw, peer, limit=2)
+            for article in kept:
+                article["scope"] = "peer"
+                article["peer_ticker"] = peer
+                peer_kept.append(article)
+            if len(peer_kept) >= 4:
+                break
 
     combined = articles + peer_kept
     _log.info(
@@ -437,6 +526,10 @@ def get_news(ticker: str, *, limit: int = 6) -> dict[str, Any]:
         "raw_count": len(raw_articles),
         "filtered_out": max(0, len(raw_articles) - len(articles)),
         "warnings": errors,
+        "fetched_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "lookback_days": lookback_days,
+        "ticker_headline_limit": limit,
+        "focus_question": bool(focus_question),
     }
 
 

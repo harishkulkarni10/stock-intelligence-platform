@@ -27,8 +27,10 @@ from backend.schemas import (
     TrainChildRequest,
 )
 from logger.context import bind_context, get_trace_id
+from logger.logger import get_logger, log_event
 
 router = APIRouter()
+help_chat_logger = get_logger("sip.help_chat")
 ROOT = Path(__file__).resolve().parents[1]
 rate_limiter = FixedWindowRateLimiter()
 
@@ -189,7 +191,7 @@ async def help_chat(request: HelpChatRequest) -> HelpChatResponse:
     def run() -> dict[str, Any]:
         from src.agents.desk_assistant import answer_desk_assistant
 
-        history = [item.model_dump() for item in request.history[-6:]]
+        history = [item.model_dump() for item in request.history[-8:]]
         result = answer_desk_assistant(
             request.message,
             history,
@@ -211,7 +213,7 @@ async def help_chat(request: HelpChatRequest) -> HelpChatResponse:
     wall_ms = round((time.perf_counter() - wall_start) * 1000, 2)
     agent = raw.pop("_agent_result", None) or {}
     meta: dict[str, Any] = {"wall_ms": wall_ms}
-    for key in ("path", "ticker", "fast_path"):
+    for key in ("path", "ticker", "fast_path", "cache_hit"):
         if agent.get(key) is not None:
             meta[key] = agent[key]
     if agent.get("data") and isinstance(agent.get("data"), dict):
@@ -219,6 +221,27 @@ async def help_chat(request: HelpChatRequest) -> HelpChatResponse:
         if fast:
             meta["fast_path"] = fast
     raw["meta"] = meta
+    preview = (request.message or "").strip().replace("\n", " ")[:96]
+    log_event(
+        help_chat_logger,
+        "help_chat_done",
+        step="help_chat",
+        status="ok",
+        duration_ms=wall_ms,
+        data={
+            "path": meta.get("path"),
+            "ticker": meta.get("ticker"),
+            "cache_hit": meta.get("cache_hit"),
+            "fast_path": meta.get("fast_path"),
+            "mode": raw.get("mode"),
+            "tools_used": raw.get("tools_used") or [],
+            "out_of_scope": bool(raw.get("out_of_scope")),
+            "repaired": bool(raw.get("repaired")),
+            "message_preview": preview,
+            "message_chars": len(request.message or ""),
+            "reply_chars": len(raw.get("reply") or ""),
+        },
+    )
     return HelpChatResponse.model_validate(raw)
 
 

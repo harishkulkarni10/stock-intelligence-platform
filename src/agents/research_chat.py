@@ -37,11 +37,12 @@ from src.agents.research_guardrails import (
     strip_ungrounded_catalyst_sentences,
     validate_research_reply,
 )
+from src.agents.assistant_voice import clean_assistant_markdown
 from src.agents.research_live_news import (
     answer_live_news_question,
     is_news_question,
     resolve_ticker_from_question,
-    wants_live_news,
+    should_route_live_news,
 )
 from src.agents.research_tools import (
     DeskContext,
@@ -56,7 +57,7 @@ from src.agents.research_tools import (
 
 logger = get_logger("sip.research_chat")
 
-MAX_HISTORY = 6
+MAX_HISTORY = 8
 MAX_TOOL_ROUNDS = 4
 _TOOL_CALL_RE = re.compile(
     r"\{[^{}]*\"tool\"\s*:\s*\"([a-z_]+)\"[^{}]*\}",
@@ -209,7 +210,7 @@ def answer_research_question(
             "path": "advice",
         }
 
-    if text and wants_live_news(text):
+    if text and should_route_live_news(text, history):
         active = desk.active_ticker if desk else None
         return answer_live_news_question(
             text,
@@ -505,7 +506,7 @@ def answer_research_question(
         },
     )
     return {
-        "reply": reply,
+        "reply": clean_assistant_markdown(reply),
         "out_of_scope": False,
         "mode": "research",
         "tools_used": tools_used,

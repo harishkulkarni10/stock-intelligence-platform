@@ -400,7 +400,7 @@ def test_missing_ticker_not_on_desk():
         run_context=desk,
         llm=_ScriptedLLM("nope"),
     )
-    assert "Not on this desk" in result["reply"] or "not among" in result["reply"].lower()
+    assert "no finished analyze packet" in result["reply"].lower()
     assert "AMZN" in result["reply"]
 
 

@@ -23,7 +23,7 @@ class _ScriptedLLM:
         return AIMessage(content=self.texts[idx])
 
 
-def _fake_news(ticker: str, *, limit: int = 6) -> dict:
+def _fake_news(ticker: str, *, limit: int = 6, **_: object) -> dict:
     return {
         "status": "ok",
         "ticker": ticker.upper(),
@@ -66,13 +66,13 @@ def test_resolve_ticker_brand_and_symbol():
     assert not is_news_question("Explain disagreement")
 
 
-def test_live_news_simple_headlines_skips_second_llm(monkeypatch):
+def test_live_news_simple_headlines_uses_harness_voice_fast_path(monkeypatch):
     import src.agents.research_live_news as live
 
     monkeypatch.setattr(live, "get_news", _fake_news)
     monkeypatch.setattr(live, "run_news_harness", _fake_harness)
 
-    llm = _ScriptedLLM("should not be called for simple headlines")
+    llm = _ScriptedLLM("unused — fast path skips chat synthesis")
     result = answer_live_news_question(
         "Latest headlines for Tesla",
         llm=llm,
@@ -81,11 +81,11 @@ def test_live_news_simple_headlines_skips_second_llm(monkeypatch):
     )
     assert result["path"] == "live_news"
     assert result["ticker"] == "TSLA"
+    assert result.get("fast_path") == "harness_voice"
     assert "get_news" in result["tools_used"]
     assert "news_agent" in result["tools_used"]
-    assert "TSLA" in result["reply"]
-    assert "MIXED" in result["reply"]
-    assert "live" in result["reply"].lower()
+    assert "**TSLA**" in result["reply"]
+    assert "worth a look" in result["reply"].lower()
     assert "cloud partnership" in result["reply"].lower()
     assert llm.calls == 0
 

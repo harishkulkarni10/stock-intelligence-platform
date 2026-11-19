@@ -293,20 +293,11 @@ def missing_desk_ticker_reply(
     mentioned: list[str],
 ) -> str:
     """User named a ticker that is not among finished desk packets."""
+    from src.agents.assistant_voice import short_missing_ticker_reply
+
     other = mentioned[0] if mentioned else "that ticker"
-    active = str(active_ticker or "—").upper()
-    on_desk = ", ".join(desk_tickers) if desk_tickers else "(none yet)"
-    return (
-        f"### Not on this desk\n"
-        f"{other} is not among the finished runs Research can see right now.\n\n"
-        f"### Desk packets\n"
-        f"- Active view: {active}\n"
-        f"- Available: {on_desk}\n\n"
-        f"### Tip\n"
-        f"Run {other} on the desk first. Research can then answer about it "
-        f"without you hunting it in the list.\n\n"
-        f"{_DEFAULT_NEXT}"
-    )
+    active = str(active_ticker or "").upper() or None
+    return short_missing_ticker_reply(missing=other, active=active)
 
 
 def foreign_ticker_reply(

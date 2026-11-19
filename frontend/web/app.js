@@ -2504,7 +2504,7 @@ function wireHelpChat() {
 
     const body = {
       message: q,
-      history: history.slice(-6),
+      history: history.slice(-8),
       mode: "auto",
       analyze_context: buildDeskAnalyzeContext(),
     };

@@ -17,7 +17,7 @@ class _ScriptedLLM:
         return AIMessage(content=self.text)
 
 
-def _fake_news(ticker: str, *, limit: int = 6) -> dict:
+def _fake_news(ticker: str, *, limit: int = 6, **_: object) -> dict:
     return {
         "status": "ok",
         "ticker": ticker.upper(),
@@ -77,7 +77,7 @@ def test_desk_packet_news_question_uses_live_not_packet_llm(monkeypatch):
     assert result.get("path") == "live_news"
     assert "get_news" in result.get("tools_used", [])
     assert "Jensen Huang fired" not in result["reply"]
-    assert "Live news" in result["reply"]
+    assert "**NVDA**" in result["reply"] or "worth a look" in result["reply"].lower()
 
 
 def test_off_desk_market_cap_claim_routes_live(monkeypatch):
@@ -94,6 +94,50 @@ def test_off_desk_market_cap_claim_routes_live(monkeypatch):
     )
     assert result.get("path") == "live_news"
     assert result.get("ticker") == "TSLA"
+
+
+def test_live_news_follow_up_routes_with_history(monkeypatch):
+    import src.agents.research_live_news as live
+
+    monkeypatch.setattr(live, "get_news", _fake_news)
+    calls = []
+
+    def _track_harness(**kwargs):
+        calls.append(kwargs.get("llm"))
+        return _fake_harness(**kwargs)
+
+    monkeypatch.setattr(live, "run_news_harness", _track_harness)
+
+    class _SynthLLM:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, messages):
+            self.calls += 1
+            return AIMessage(
+                content=(
+                    "### NVDA — CEO\n\n"
+                    "- Headlines mention interim CEO wording only.\n\n"
+                    "NEXT: Latest headlines for NVDA"
+                )
+            )
+
+    llm = _SynthLLM()
+    history = [
+        {"role": "user", "content": "Latest hot news for Nvidia"},
+        {
+            "role": "assistant",
+            "content": "### NVDA — live news\n\n**Headlines**\n- earnings beat",
+        },
+    ]
+    result = answer_research_question(
+        "what's with the CEO - what happened there",
+        run_context=None,
+        history=history,
+        llm=llm,
+    )
+    assert result.get("path") == "live_news"
+    assert llm.calls >= 1
 
 
 def test_bare_news_asks_for_ticker():

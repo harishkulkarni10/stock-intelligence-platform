@@ -10,9 +10,14 @@ Flow:
 
 from __future__ import annotations
 
+import concurrent.futures
+import hashlib
 import json
 import logging
+import os
 import re
+import time
+from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -20,6 +25,12 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from logger.logger import get_logger, log_event
 from src.agents.llm import get_chat_llm, message_text
 from src.agents.news_guardrails import run_news_harness
+from src.agents.assistant_voice import (
+    clean_assistant_markdown,
+    format_live_news_reply,
+    harness_to_chat_reply,
+    strip_market_harness_preface,
+)
 from src.agents.research_guardrails import (
     ADVICE_META,
     OUT_OF_SCOPE,
@@ -31,10 +42,18 @@ from src.agents.research_guardrails import (
     strip_brochure_voice,
     strip_tool_name_leaks,
 )
-from src.agents.tools import format_news_for_prompt, get_news
+from src.agents.tools import (
+    NEWS_CHAT_DEFAULT_LIMIT,
+    NEWS_DEFAULT_LOOKBACK_DAYS,
+    format_news_for_prompt,
+    get_news,
+)
 from src.data.ingestion import normalize_ticker
 
 logger = get_logger("sip.research_live_news")
+
+# Second LLM (chat polish) — skip when slow; fall back to harness voice.
+LIVE_NEWS_SYNTH_TIMEOUT_SEC = float(os.getenv("LIVE_NEWS_SYNTH_TIMEOUT_SEC", "45"))
 
 _NEWS_HINT_RE = re.compile(
     r"(?i)\b("
@@ -281,6 +300,108 @@ def wants_live_news(message: str) -> bool:
     return False
 
 
+_FOLLOW_UP_NEWS_RE = re.compile(
+    r"(?i)\b("
+    r"ceo|jensen|huang|what happened|what's with|why did|you said|"
+    r"clarify|explain that|tell me more|that story|interim|go on"
+    r")\b"
+)
+_LIVE_THREAD_MARKERS = (
+    "worth a look",
+    "— live news",
+    "latest from live",
+    "**worth a look**",
+    "headlines",
+)
+
+NEWS_REPLY_CACHE_TTL_SEC = int(os.getenv("NEWS_REPLY_CACHE_TTL_SEC", "180"))
+LIVE_HISTORY_TURNS = 6
+
+
+@dataclass
+class _ReplyCacheEntry:
+    reply: str
+    payload: dict[str, Any]
+    expires: float
+
+
+_REPLY_CACHE: dict[str, _ReplyCacheEntry] = {}
+
+
+def _cache_key(ticker: str, question: str) -> str:
+    norm = re.sub(r"\s+", " ", (question or "").lower().strip())
+    return hashlib.sha256(f"{ticker}|{norm}".encode()).hexdigest()[:32]
+
+
+def _cache_get(key: str) -> _ReplyCacheEntry | None:
+    entry = _REPLY_CACHE.get(key)
+    if not entry or entry.expires < time.time():
+        _REPLY_CACHE.pop(key, None)
+        return None
+    return entry
+
+
+def _cache_put(key: str, reply: str, payload: dict[str, Any]) -> None:
+    _REPLY_CACHE[key] = _ReplyCacheEntry(
+        reply=reply,
+        payload=payload,
+        expires=time.time() + NEWS_REPLY_CACHE_TTL_SEC,
+    )
+
+
+def is_live_news_follow_up(
+    message: str,
+    history: list[dict[str, str]] | None,
+) -> bool:
+    if not history or not (message or "").strip():
+        return False
+    if wants_live_news(message):
+        return False
+    if not _FOLLOW_UP_NEWS_RE.search(message) and len(message.split()) > 14:
+        return False
+    for turn in reversed(history[-LIVE_HISTORY_TURNS:]):
+        blob = (turn.get("content") or "").lower()
+        if any(marker in blob for marker in _LIVE_THREAD_MARKERS):
+            return True
+    return False
+
+
+def should_route_live_news(
+    message: str,
+    history: list[dict[str, str]] | None,
+) -> bool:
+    return wants_live_news(message) or is_live_news_follow_up(message, history)
+
+
+def _prefer_fast_headlines_only(
+    question: str,
+    history: list[dict[str, str]] | None,
+) -> bool:
+    """One LLM (Market expert only) — harness voice, not a second synthesis call."""
+    if not _is_simple_headlines_ask(question):
+        return False
+    if is_live_news_follow_up(question, history):
+        return False
+    for turn in history or []:
+        if turn.get("role") == "assistant" and (turn.get("content") or "").strip():
+            return False
+    return True
+
+
+def _format_history_for_prompt(history: list[dict[str, str]] | None) -> str:
+    chunks: list[str] = []
+    for turn in (history or [])[-LIVE_HISTORY_TURNS:]:
+        role = (turn.get("role") or "user").strip().lower()
+        content = (turn.get("content") or "").strip()
+        if not content:
+            continue
+        label = "User" if role == "user" else "Assistant"
+        if len(content) > 900:
+            content = content[:899] + "…"
+        chunks.append(f"{label}: {content}")
+    return "\n\n".join(chunks)
+
+
 def _normalize_phrase(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
 
@@ -295,7 +416,13 @@ def resolve_ticker_from_context(
     ticker = resolve_ticker_from_question(message)
     if ticker:
         return ticker
-    if _CLAIM_OR_EVENT_RE.search(message or "") and active_ticker:
+    if (
+        active_ticker
+        and (
+            _CLAIM_OR_EVENT_RE.search(message or "")
+            or _FOLLOW_UP_NEWS_RE.search(message or "")
+        )
+    ):
         return active_ticker.upper()
     for turn in reversed(history or []):
         role = (turn.get("role") or "").strip().lower()
@@ -362,6 +489,65 @@ def _live_next_chips(ticker: str) -> str:
     return _LIVE_NEXT.format(ticker=ticker)
 
 
+def _news_fetch_plan(question: str) -> tuple[int, int]:
+    q = (question or "").lower()
+    limit = NEWS_CHAT_DEFAULT_LIMIT
+    if re.search(r"(?i)\bpast week\b|1 week|seven day|last 7", q):
+        limit = max(limit, 15)
+    lookback = NEWS_DEFAULT_LOOKBACK_DAYS
+    return limit, lookback
+
+
+def _headline_titles(
+    news: dict[str, Any],
+    *,
+    max_items: int = 10,
+) -> list[str]:
+    titles: list[str] = []
+    for item in (news.get("articles") or []):
+        if item.get("scope") == "peer":
+            continue
+        if len(titles) >= max_items:
+            break
+        title = str(item.get("headline") or item.get("title") or "").strip()
+        if title:
+            titles.append(title)
+    return titles
+
+
+def _format_headline_bullets(
+    news: dict[str, Any],
+    *,
+    max_items: int = 10,
+    question: str | None = None,
+) -> tuple[str, str]:
+    """Return (all bullets markdown, optional CEO highlight block)."""
+    lines: list[str] = []
+    ceo_lines: list[str] = []
+    q = (question or "").lower()
+    focus_ceo = any(w in q for w in ("ceo", "jensen", "huang", "leadership", "resign", "fired", "interim"))
+    for item in (news.get("articles") or []):
+        if item.get("scope") == "peer":
+            continue
+        if len(lines) >= max_items:
+            break
+        title = str(item.get("headline") or item.get("title") or "").strip()
+        if not title:
+            continue
+        when = str(item.get("published") or item.get("date") or "").strip()[:10]
+        prefix = f"{when} — " if when else ""
+        line = f"- {prefix}{title}"
+        lines.append(line)
+        title_low = title.lower()
+        if focus_ceo and any(k in title_low for k in ("ceo", "jensen", "huang", "interim", "leadership")):
+            ceo_lines.append(line)
+    bullets = "\n".join(lines) or "- No headlines kept."
+    ceo_block = ""
+    if ceo_lines:
+        ceo_block = "**Leadership (from headlines)**\n" + "\n".join(ceo_lines[:5]) + "\n\n"
+    return bullets, ceo_block
+
+
 def _deterministic_news_reply(
     *,
     ticker: str,
@@ -369,35 +555,17 @@ def _deterministic_news_reply(
     note: str,
     news: dict[str, Any],
     compact: bool = False,
+    question: str | None = None,
 ) -> str:
-    titles, _ = _article_allowlist(news)
-    bullets = "\n".join(f"- {t}" for t in titles[:6]) or "- No headlines kept."
-    if compact:
-        return (
-            f"### Live news · {ticker}\n"
-            f"Source: live fetch (fresh headlines, not the saved desk packet).\n"
-            f"Headline tone: {sentiment or '—'}.\n\n"
-            f"### Headlines\n"
-            f"{bullets}\n\n"
-            f"### Caveat\n"
-            f"Research support only — not trade advice.\n\n"
-            f"{_live_next_chips(ticker)}"
-        )
-    note_clip = (note or "").strip()
-    if len(note_clip) > 500:
-        note_clip = note_clip[:499] + "…"
-    return (
-        f"### Live news · {ticker}\n"
-        f"Source: live fetch (fresh headlines, not the saved desk packet). "
-        f"Headline tone: {sentiment or '—'}.\n\n"
-        f"### Summary\n"
-        f"{note_clip or 'See headlines below.'}\n\n"
-        f"### Headlines\n"
-        f"{bullets}\n\n"
-        f"### Caveat\n"
-        f"Research support only — not trade advice.\n\n"
-        f"{_live_next_chips(ticker)}"
+    del compact, question
+    titles = _headline_titles(news, max_items=8)
+    body = harness_to_chat_reply(
+        ticker=ticker,
+        harness_note=note,
+        headline_titles=titles,
+        sentiment=sentiment,
     )
+    return clean_assistant_markdown(f"{body}\n\n{_live_next_chips(ticker)}")
 
 
 def _is_simple_headlines_ask(question: str) -> bool:
@@ -455,61 +623,66 @@ def _synthesize_from_agent(
     history: list[dict[str, str]] | None,
     llm,
 ) -> str:
-    titles, urls = _article_allowlist(news)
-    articles_json = json.dumps(
-        [
-            {
-                "headline": a.get("headline") or a.get("title"),
-                "url": a.get("url") or a.get("link"),
-                "published": a.get("published") or a.get("datetime") or a.get("date"),
-                "scope": a.get("scope"),
-            }
-            for a in (news.get("articles") or [])[:10]
-            if isinstance(a, dict)
-        ],
-        ensure_ascii=False,
-        indent=2,
-    )
-    system = f"""You are Research Co-Pilot for Stock Intelligence.
+    ticker_articles = [
+        a
+        for a in (news.get("articles") or [])
+        if isinstance(a, dict) and a.get("scope") != "peer"
+    ][:8]
+    headline_lines = [
+        f"- {(a.get('headline') or a.get('title') or '').strip()}"
+        for a in ticker_articles
+        if (a.get("headline") or a.get("title"))
+    ]
+    note_clip = strip_market_harness_preface(agent_note)
+    if len(note_clip) > 900:
+        note_clip = note_clip[:899] + "…"
+    hist_blob = _format_history_for_prompt(history)
+    system = f"""Desk assistant — concise chat answer about {ticker} from LIVE NEWS only.
 
-The user asked a NEWS question. There may be no desk analyze run.
-You are given LIVE tool results: Market expert note + headlines for {ticker}.
+STYLE:
+- **{ticker}** then 2–3 short sentences (themes only).
+- **Worth a look** — 4–6 bullets; label: one-line fact (e.g. "Berlin expansion: …").
+- No provider names, timestamps, disclaimers, or stock phrases like "navigating a period of intense".
+- Use CONVERSATION only when the user is following up.
 
-Rules:
-- Answer ONLY from LIVE NEWS FACTS below. Do not invent headlines, URLs, or figures.
-- Prefer the Market expert note for tone/sentiment; use headlines as support.
-- Say clearly this is live news, not a finished desk packet.
-- ### headings and - bullets. No bold/italics.
-- No buy/sell advice.
-- If the user asks about CEO, firing, bankruptcy, delisting, or huge revenue figures:
-  only affirm if a headline explicitly supports it; otherwise say it is NOT in this fetch.
-- Never invent leadership changes (e.g. Jensen Huang) not present in Allowed titles.
-- End with:
+RULES: Only facts in the expert note and headline list. No new numbers. No buy/sell.
+End with:
 {_live_next_chips(ticker)}
 """
     messages: list = [SystemMessage(content=system)]
-    for turn in (history or [])[-4:]:
-        role = (turn.get("role") or "").strip().lower()
-        content = (turn.get("content") or "").strip()
-        if not content:
-            continue
-        if role == "assistant":
-            messages.append(HumanMessage(content=f"ASSISTANT_PREV:\n{content}"))
-        else:
-            messages.append(HumanMessage(content=content))
+    if hist_blob:
+        messages.append(
+            HumanMessage(content=f"CONVERSATION (this session):\n{hist_blob}")
+        )
     user = (
-        f"QUESTION:\n{question}\n\n"
-        f"LIVE NEWS FACTS\n"
-        f"Ticker: {ticker}\n"
-        f"Market expert sentiment: {sentiment}\n"
-        f"Market expert note:\n{agent_note}\n\n"
-        f"Headlines JSON:\n{articles_json}\n\n"
-        f"Allowed titles: {titles[:12]}\n"
-        f"Allowed URLs: {urls[:12]}\n\n"
-        "Write the final ### markdown answer now."
+        f"QUESTION: {question}\n\n"
+        f"Sentiment: {sentiment}\n"
+        f"Expert note:\n{note_clip}\n\n"
+        f"Headlines:\n" + "\n".join(headline_lines) + "\n"
     )
     messages.append(HumanMessage(content=user))
     return message_text(llm.invoke(messages)).strip()
+
+
+def _synthesize_with_timeout(**kwargs: Any) -> str | None:
+    timeout = max(5.0, LIVE_NEWS_SYNTH_TIMEOUT_SEC)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_synthesize_from_agent, **kwargs)
+        try:
+            return fut.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            log_event(
+                logger,
+                "live_news_synth_timeout",
+                level=logging.WARNING,
+                step="research_live_news",
+                status="timeout",
+                data={
+                    "ticker": kwargs.get("ticker"),
+                    "timeout_sec": timeout,
+                },
+            )
+            return None
 
 
 def _reply_fails_headline_grounding(reply: str, titles: list[str]) -> bool:
@@ -587,12 +760,26 @@ def answer_live_news_question(
             "path": "need_ticker",
         }
 
+    cache_key = _cache_key(ticker, text)
+    cached = _cache_get(cache_key)
+    if cached:
+        hit = dict(cached.payload)
+        hit["cache_hit"] = True
+        return hit
+
     fetch = news_fetcher or get_news
     harness_fn = news_harness or run_news_harness
     client = llm if llm is not None else get_chat_llm()
 
     try:
-        news = fetch(ticker, limit=6)
+        fetch_limit, lookback = _news_fetch_plan(text)
+        news = fetch(
+            ticker,
+            limit=fetch_limit,
+            lookback_days=lookback,
+            focus_question=text,
+            include_peers=False,
+        )
     except Exception as exc:  # noqa: BLE001
         log_event(
             logger,
@@ -654,14 +841,26 @@ def answer_live_news_question(
 
     # Simple “latest headlines” asks: harness note + bullets is enough (~1 LLM).
     # Claim / judgment questions still get a Research synthesis pass.
-    if _is_simple_headlines_ask(text):
+    if _prefer_fast_headlines_only(text, history):
         reply = _deterministic_news_reply(
             ticker=ticker,
             sentiment=sentiment,
             note=agent_note,
             news=news,
-            compact=True,
+            question=text,
         )
+        out = {
+            "reply": reply,
+            "out_of_scope": False,
+            "mode": "research",
+            "tools_used": tools_used,
+            "repaired": False,
+            "path": "live_news",
+            "ticker": ticker,
+            "fast_path": "harness_voice",
+            "cache_hit": False,
+        }
+        _cache_put(cache_key, reply, out)
         log_event(
             logger,
             "live_news_done",
@@ -673,23 +872,14 @@ def answer_live_news_question(
                 "sentiment": sentiment,
                 "repaired": False,
                 "articles": len(news.get("articles") or []),
-                "fast_path": "harness_only",
+                "fast_path": "harness_voice",
             },
         )
-        return {
-            "reply": reply,
-            "out_of_scope": False,
-            "mode": "research",
-            "tools_used": tools_used,
-            "repaired": False,
-            "path": "live_news",
-            "ticker": ticker,
-            "fast_path": "harness_only",
-        }
+        return out
 
     repaired = False
     try:
-        raw = _synthesize_from_agent(
+        raw = _synthesize_with_timeout(
             question=text,
             ticker=ticker,
             sentiment=sentiment,
@@ -698,6 +888,9 @@ def answer_live_news_question(
             history=history,
             llm=client,
         )
+        if raw is None:
+            raw = ""
+            repaired = True
         cleaned = ensure_next_chips(
             polish_research_markdown(
                 strip_brochure_voice(strip_tool_name_leaks(raw))
@@ -715,6 +908,7 @@ def answer_live_news_question(
                 note=agent_note,
                 news=news,
                 compact=_is_simple_headlines_ask(text),
+                question=text,
             )
             log_event(
                 logger,
@@ -726,12 +920,8 @@ def answer_live_news_question(
         else:
             reply = cleaned
             # Ensure live/source framing is present.
-            if "live" not in reply.lower():
-                reply = (
-                    f"### Live news · {ticker}\n"
-                    f"Source: live fetch (not a desk run packet).\n\n"
-                    + reply
-                )
+            if not re.search(rf"\*\*{re.escape(ticker)}\*\*", reply, re.I):
+                reply = f"**{ticker}**\n\n{reply}"
                 reply = ensure_next_chips(reply)
                 repaired = True
     except Exception as exc:  # noqa: BLE001
@@ -748,9 +938,11 @@ def answer_live_news_question(
             sentiment=sentiment,
             note=agent_note,
             news=news,
+            question=text,
         )
         repaired = True
 
+    reply = clean_assistant_markdown(reply)
     log_event(
         logger,
         "live_news_done",
@@ -764,7 +956,7 @@ def answer_live_news_question(
             "articles": len(news.get("articles") or []),
         },
     )
-    return {
+    out = {
         "reply": reply,
         "out_of_scope": False,
         "mode": "research",
@@ -772,4 +964,7 @@ def answer_live_news_question(
         "repaired": repaired,
         "path": "live_news",
         "ticker": ticker,
+        "cache_hit": False,
     }
+    _cache_put(cache_key, reply, out)
+    return out
