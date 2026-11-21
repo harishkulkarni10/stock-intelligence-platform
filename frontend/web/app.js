@@ -2364,7 +2364,7 @@ function wireHelpChat() {
     emptyState.classList.toggle("hidden", !show);
   }
 
-  function setSuggestionsVisible(show) {
+  function setEmptyChromeVisible(show) {
     if (!suggestions) return;
     if (show) suggestions.removeAttribute("hidden");
     else suggestions.setAttribute("hidden", "");
@@ -2372,8 +2372,9 @@ function wireHelpChat() {
 
   function refreshSuggestionVisibility() {
     if (!suggestions) return;
-    suggestions.querySelectorAll("[data-help-q]").forEach((btn) => {
-      btn.hidden = false;
+    const hasDesk = hasOpenRun();
+    suggestions.querySelectorAll(".help-suggest-desk").forEach((btn) => {
+      btn.hidden = !hasDesk;
     });
   }
 
@@ -2381,7 +2382,7 @@ function wireHelpChat() {
     if (modeBar) modeBar.hidden = true;
     const label = "Assistant";
     if (titleEl) titleEl.textContent = label;
-    if (emptyTitle) emptyTitle.textContent = "Ask the desk assistant";
+    if (emptyTitle) emptyTitle.textContent = "Hello";
     if (toggleLabel) toggleLabel.textContent = label;
     if (input) {
       input.placeholder = hasOpenRun()
@@ -2416,21 +2417,24 @@ function wireHelpChat() {
     toggle.setAttribute("aria-expanded", open ? "true" : "false");
     if (open) {
       syncHelpChrome();
-      if (!welcomed) {
-        setSuggestionsVisible(true);
-        welcomed = true;
-      } else {
-        setSuggestionsVisible(true);
-      }
+      welcomed = true;
+      const hasConversation = history.length > 0;
+      setEmptyVisible(!hasConversation);
+      setEmptyChromeVisible(!hasConversation);
       input.focus();
     }
+  }
+
+  function scrollMessagesEnd() {
+    if (!messages) return;
+    messages.scrollTop = messages.scrollHeight;
   }
 
   function appendFollowups(host, labels) {
     if (!labels || !labels.length) return;
     const wrap = document.createElement("div");
     wrap.className = "help-followups";
-    for (const label of labels) {
+    for (const label of labels.slice(0, 3)) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "help-suggest";
@@ -2439,12 +2443,6 @@ function wireHelpChat() {
       wrap.appendChild(btn);
     }
     host.appendChild(wrap);
-  }
-
-  function scrollToRowStart(row) {
-    if (!messages || !row) return;
-    const rowTop = row.offsetTop - messages.offsetTop;
-    messages.scrollTop = Math.max(0, rowTop - 8);
   }
 
   function appendBubble(role, text, { pending = false, oos = false } = {}) {
@@ -2486,12 +2484,12 @@ function wireHelpChat() {
     if (!q || sending) return;
     setSendingUi(true);
     input.value = "";
-    setSuggestionsVisible(false);
+    setEmptyChromeVisible(false);
     setEmptyVisible(false);
     appendBubble("user", q);
     const { row, bubble: pending } = appendBubble("bot", "", { pending: true });
     activePending = { row, bubble: pending };
-    scrollToRowStart(row);
+    scrollMessagesEnd();
 
     const controller = new AbortController();
     activeController = controller;
@@ -2534,7 +2532,7 @@ function wireHelpChat() {
       appendFollowups(pending, rendered.next);
       history.push({ role: "user", content: q });
       history.push({ role: "assistant", content: reply });
-      scrollToRowStart(row);
+      scrollMessagesEnd();
     } catch (error) {
       if (error.name === "AbortError") {
         const timedOut = controller.signal.reason === "timeout";
@@ -2543,7 +2541,7 @@ function wireHelpChat() {
           pending.innerHTML = "";
           pending.textContent =
             "Timed out waiting for the assistant (live news can take up to ~3 min). Try again.";
-          scrollToRowStart(row);
+          scrollMessagesEnd();
         } else if (activePending && activePending.row && activePending.row.parentNode) {
           activePending.row.remove();
         }
@@ -2551,7 +2549,7 @@ function wireHelpChat() {
         pending.classList.remove("pending");
         pending.innerHTML = "";
         pending.textContent = String(error.message || error);
-        scrollToRowStart(row);
+        scrollMessagesEnd();
       }
     } finally {
       window.clearTimeout(timeoutId);

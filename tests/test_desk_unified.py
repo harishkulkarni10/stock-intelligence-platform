@@ -33,14 +33,6 @@ def _fake_news(ticker: str, *, limit: int = 6, **_: object) -> dict:
     }
 
 
-def _fake_harness(*, ticker, news, news_raw, llm):
-    return {
-        "news_summary": f"Sentiment: MIXED\nAnalysis:\n{ticker} earnings in headlines.",
-        "news_sentiment": "MIXED",
-        "news_repaired": False,
-    }
-
-
 def test_wants_live_news_claim_and_hot():
     assert wants_live_news("Was Tesla's market cap wiped out in half?")
     assert wants_live_news("What is the latest hot news of Nvidia from the past week")
@@ -57,7 +49,6 @@ def test_desk_packet_news_question_uses_live_not_packet_llm(monkeypatch):
     import src.agents.research_live_news as live
 
     monkeypatch.setattr(live, "get_news", _fake_news)
-    monkeypatch.setattr(live, "run_news_harness", _fake_harness)
 
     packet = {
         "ticker": "NVDA",
@@ -84,7 +75,6 @@ def test_off_desk_market_cap_claim_routes_live(monkeypatch):
     import src.agents.research_live_news as live
 
     monkeypatch.setattr(live, "get_news", _fake_news)
-    monkeypatch.setattr(live, "run_news_harness", _fake_harness)
 
     packet = {"ticker": "NVDA", "desk_packets": {"NVDA": {"ticker": "NVDA"}}}
     result = answer_research_question(
@@ -100,13 +90,6 @@ def test_live_news_follow_up_routes_with_history(monkeypatch):
     import src.agents.research_live_news as live
 
     monkeypatch.setattr(live, "get_news", _fake_news)
-    calls = []
-
-    def _track_harness(**kwargs):
-        calls.append(kwargs.get("llm"))
-        return _fake_harness(**kwargs)
-
-    monkeypatch.setattr(live, "run_news_harness", _track_harness)
 
     class _SynthLLM:
         def __init__(self):

@@ -49,3 +49,5 @@ frontend/pro/
 
 # Local agentic Research phase plan + per-phase dev logs (not committed)
 phases/
+# Local run cheat sheet (lives under phases/agentic-research/commands.md)
+phases/**/commands.md

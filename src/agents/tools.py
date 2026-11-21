@@ -5,8 +5,11 @@ Numbers and headlines come from code/APIs — not from the LLM.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
+import time
+from dataclasses import dataclass
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -32,7 +35,35 @@ FINNHUB_API_KEY = os.getenv("FMI_API_KEY") or os.getenv("FINNHUB_API_KEY")
 FINNHUB_URL = "https://finnhub.io/api/v1/company-news"
 NEWS_CHAT_DEFAULT_LIMIT = int(os.getenv("NEWS_CHAT_LIMIT", "12"))
 NEWS_DEFAULT_LOOKBACK_DAYS = int(os.getenv("NEWS_LOOKBACK_DAYS", "7"))
+NEWS_FETCH_CACHE_TTL_SEC = int(os.getenv("NEWS_FETCH_CACHE_TTL_SEC", "180"))
 _log = get_logger()
+
+
+@dataclass
+class _NewsFetchCacheEntry:
+    payload: dict[str, Any]
+    expires: float
+
+
+_NEWS_FETCH_CACHE: dict[str, _NewsFetchCacheEntry] = {}
+
+
+def _news_fetch_cache_key(
+    symbol: str,
+    *,
+    limit: int,
+    lookback_days: int | None,
+    include_peers: bool,
+    focus_question: str | None,
+) -> str:
+    fq = (focus_question or "").strip().lower()[:96]
+    raw = f"{symbol}|{limit}|{lookback_days or 0}|{include_peers}|{fq}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:24]
+
+
+def clear_news_fetch_cache() -> None:
+    """Test helper — drop in-process news fetch cache."""
+    _NEWS_FETCH_CACHE.clear()
 
 # Company aliases for ticker relevance (Yahoo feeds are often unrelated).
 _TICKER_ALIASES: dict[str, tuple[str, ...]] = {
@@ -396,6 +427,7 @@ def get_news(
     lookback_days: int | None = None,
     focus_question: str | None = None,
     include_peers: bool = True,
+    refresh: bool = False,
 ) -> dict[str, Any]:
     """Fetch recent headlines for the ticker plus a few peer/competitor items.
 
@@ -405,6 +437,24 @@ def get_news(
     """
     symbol = normalize_ticker(ticker)
     errors: list[str] = []
+    cache_key = _news_fetch_cache_key(
+        symbol,
+        limit=limit,
+        lookback_days=lookback_days,
+        include_peers=include_peers,
+        focus_question=focus_question,
+    )
+    if not refresh and NEWS_FETCH_CACHE_TTL_SEC > 0:
+        entry = _NEWS_FETCH_CACHE.get(cache_key)
+        if entry and entry.expires > time.time():
+            cached = dict(entry.payload)
+            cached["cache_hit"] = True
+            _log.info(
+                "[news_tool] fetch_cache_hit ticker=%s provider=%s",
+                symbol,
+                cached.get("provider"),
+            )
+            return cached
     _log.info(
         "[news_tool] fetch_start ticker=%s limit=%s finnhub_keyed=%s",
         symbol,
@@ -455,7 +505,7 @@ def get_news(
     articles = rank_articles_for_question(articles, focus_question)[:limit]
     # Symbol-scoped Yahoo RSS is already ticker-filtered by Yahoo; if alias
     # matching drops everything, keep the top RSS headlines rather than UNAVAILABLE.
-    if not articles and provider in {"yahoo", "yahoo_rss"} and raw_articles:
+    if not articles and provider == "yahoo_rss" and raw_articles:
         articles = [
             dict(item) for item in raw_articles[:limit] if item.get("headline")
         ]
@@ -518,7 +568,7 @@ def get_news(
         len(articles),
         len(peer_kept),
     )
-    return {
+    payload = {
         "status": "ok",
         "ticker": symbol,
         "provider": provider,
@@ -530,7 +580,14 @@ def get_news(
         "lookback_days": lookback_days,
         "ticker_headline_limit": limit,
         "focus_question": bool(focus_question),
+        "cache_hit": False,
     }
+    if NEWS_FETCH_CACHE_TTL_SEC > 0:
+        _NEWS_FETCH_CACHE[cache_key] = _NewsFetchCacheEntry(
+            payload=dict(payload),
+            expires=time.time() + NEWS_FETCH_CACHE_TTL_SEC,
+        )
+    return payload
 
 
 def format_news_for_prompt(news: dict[str, Any]) -> str:

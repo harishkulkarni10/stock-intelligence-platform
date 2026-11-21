@@ -213,7 +213,14 @@ async def help_chat(request: HelpChatRequest) -> HelpChatResponse:
     wall_ms = round((time.perf_counter() - wall_start) * 1000, 2)
     agent = raw.pop("_agent_result", None) or {}
     meta: dict[str, Any] = {"wall_ms": wall_ms}
-    for key in ("path", "ticker", "fast_path", "cache_hit"):
+    for key in (
+        "path",
+        "ticker",
+        "fast_path",
+        "cache_hit",
+        "news_fetch_cache_hit",
+        "llm_calls",
+    ):
         if agent.get(key) is not None:
             meta[key] = agent[key]
     if agent.get("data") and isinstance(agent.get("data"), dict):

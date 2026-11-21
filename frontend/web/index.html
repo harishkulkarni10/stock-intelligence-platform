@@ -10,9 +10,9 @@
       href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/styles.css?v=20260356" />
+    <link rel="stylesheet" href="/styles.css?v=20260372" />
     <script src="/vendor/plotly.min.js?v=2.35.2"></script>
-    <script src="/app.js?v=20260362" defer></script>
+    <script src="/app.js?v=20260372" defer></script>
   </head>
   <body>
     <header class="topbar" id="topBar">
@@ -588,23 +588,17 @@
                 </g>
               </svg>
             </span>
-            <p class="help-chat-empty-title" id="helpChatEmptyTitle">Ask the desk assistant</p>
+            <p class="help-chat-empty-title" id="helpChatEmptyTitle">Hello</p>
+            <p class="help-chat-empty-hint">Ask about live headlines, your desk run, or the product.</p>
+            <div id="helpChatSuggestions" class="help-chat-starters">
+              <button type="button" class="help-suggest" data-help-q="Latest headlines for TSLA">Headlines · TSLA</button>
+              <button type="button" class="help-suggest" data-help-q="Latest headlines for NVDA">Headlines · NVDA</button>
+              <button type="button" class="help-suggest" data-help-q="What does the Performance analyst do?">Performance analyst</button>
+              <button type="button" class="help-suggest" data-help-q="How do I read a finished run?">How to read a run</button>
+              <button type="button" class="help-suggest help-suggest-desk" data-help-q="Explain disagreement across specialists">Explain disagreement</button>
+              <button type="button" class="help-suggest help-suggest-desk" data-help-q="Why this confidence?">Why this confidence?</button>
+            </div>
           </div>
-        </div>
-        <div id="helpChatSuggestions" class="help-chat-suggestions" hidden>
-          <button type="button" class="help-suggest" data-help-q="What does the Performance analyst do?" data-mode="guide">Performance analyst</button>
-          <button type="button" class="help-suggest" data-help-q="What does the Market expert do?" data-mode="guide">Market expert</button>
-          <button type="button" class="help-suggest" data-help-q="What does the Financial analyst do?" data-mode="guide">Financial analyst</button>
-          <button type="button" class="help-suggest" data-help-q="What does the Risk analyst do?" data-mode="guide">Risk analyst</button>
-          <button type="button" class="help-suggest" data-help-q="What does the Research brief do?" data-mode="guide">Research brief</button>
-          <button type="button" class="help-suggest" data-help-q="How do I read a finished run?" data-mode="guide">How to read a run</button>
-          <button type="button" class="help-suggest" data-help-q="What is On your desk?" data-mode="guide">On your desk</button>
-          <button type="button" class="help-suggest" data-help-q="Latest headlines for TSLA">Live news (TSLA)</button>
-          <button type="button" class="help-suggest" data-help-q="Explain disagreement across specialists">Explain disagreement</button>
-          <button type="button" class="help-suggest" data-help-q="Why this confidence?">Why this confidence?</button>
-          <button type="button" class="help-suggest" data-help-q="Walk through Risk on this run">Walk through Risk</button>
-          <button type="button" class="help-suggest" data-help-q="What is the projected move and forecast path?">Forecast path</button>
-          <button type="button" class="help-suggest" data-help-q="Summarize the Research brief bull vs bear case">Bull vs bear</button>
         </div>
         <form id="helpChatForm" class="help-chat-form" autocomplete="off">
           <label class="sr-only" for="helpChatInput">Ask the desk assistant</label>

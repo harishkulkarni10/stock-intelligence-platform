@@ -1,11 +1,14 @@
 """Live news path for Research Co-Pilot — works with an empty desk.
 
-Flow:
-1. Resolve ticker from the user question (symbol or company name).
-2. Fetch headlines via get_news (same tool the Market expert uses).
-3. Run the news harness (Market expert) for sentiment + specialist note.
-4. Have Research LLM read that agent output + headlines and answer the user.
-5. Validate: no invented URLs/headlines; no buy/sell advice.
+Chat flow (Phase 1 — no Market harness):
+1. Resolve ticker from the question (+ session context).
+2. Fetch headlines via get_news (TTL cache in tools.py).
+3. Simple headline asks → format only (**0 LLM**).
+4. Claim check → **claim_zero_llm** when headlines do not support the claim; else one LLM (timeout + repair).
+5. Topic follow-ups (e.g. Cybercab) → filter headlines; no full dump repeat.
+6. Validate: no invented URLs/headlines; no buy/sell advice.
+
+Analyze graph still uses run_news_harness in nodes.py — not this module.
 """
 
 from __future__ import annotations
@@ -24,11 +27,9 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from logger.logger import get_logger, log_event
 from src.agents.llm import get_chat_llm, message_text
-from src.agents.news_guardrails import run_news_harness
 from src.agents.assistant_voice import (
     clean_assistant_markdown,
     format_live_news_reply,
-    harness_to_chat_reply,
     strip_market_harness_preface,
 )
 from src.agents.research_guardrails import (
@@ -65,7 +66,7 @@ _NEWS_HINT_RE = re.compile(
 )
 _CLAIM_OR_EVENT_RE = re.compile(
     r"(?i)\b("
-    r"bankrupt|bankruptcy|delist|delisting|"
+    r"bankrupt|bankruptcy|delist(?:ed|ing)?|delisting|"
     r"market cap|wiped|halved|cut in half|"
     r"fired|firings|ceo\b|chief executive|"
     r"jensen huang|according to (?:the )?news|"
@@ -82,15 +83,27 @@ _SIMPLE_HEADLINES_ASK_RE = re.compile(
     r"(?:what(?:'s| is)\s+(?:the\s+)?)?(?:latest|recent)\s+(?:news|headlines|coverage)\b|"
     r"(?:latest|recent)\s+headlines?\b|"
     r"(?:news|headlines)\s+(?:for|on|about|today)\b|"
-    r"(?:tell me|give me|show me)\s+(?:the\s+)?(?:latest\s+)?(?:news|headlines)\b|"
+    r"(?:tell me|give me|show me)\s+(?:the\s+)?(?:latest\s+)?(?:news|headlines)(?:\s+for\b|\s*$)|"
+    r"(?:tell me|give me|show me)\s+headlines?\s+(?:for|on|about)\b|"
+    r"what(?:'s| is)\s+happening\b|"
     r"[A-Za-z][A-Za-z0-9.&'\- ]{0,40}\s+news(?:\s+today)?\b"
     r").*$"
 )
-_NEEDS_SYNTH_RE = re.compile(
+# Only these need an LLM to verify a yes/no claim against headlines.
+_CLAIM_VERIFY_RE = re.compile(
     r"(?i)\b("
-    r"wiped|bankrupt|delist|halved|cut in half|market cap|"
-    r"true|false|did |was |is nvidia|according to|"
-    r"should i|buy|sell|why is|confidence|explain"
+    r"wiped|bankrupt|bankruptcy|delist(?:ed|ing)?|delisting|halved|cut in half|"
+    r"market cap|true or false|is it true|according to (?:the )?news"
+    r")\b"
+)
+_PRIVATE_CO_EVENT_RE = re.compile(
+    r"(?i)\b(ipo|went public|on the market|publicly traded|already trading|listed on)\b"
+)
+_HEADLINE_CHAT_RE = re.compile(
+    r"(?i)\b("
+    r"headlines?|latest\b|recent\b|coverage|"
+    r"happening|what(?:'s| is)\s+(?:good|bad)|"
+    r"one thing.*good|what.*bad|anything good|anything bad"
     r")\b"
 )
 _TICKER_TOKEN_RE = re.compile(r"\b([A-Za-z]{1,5})\b")
@@ -173,6 +186,8 @@ _TICKER_STOP = frozenset(
         "OVER",
         "ONCE",
         "INTO",
+        "IPO",
+        "SPAC",
         "LIKE",
         "THAN",
         "THEN",
@@ -297,6 +312,8 @@ def wants_live_news(message: str) -> bool:
         return True
     if re.search(r"(?i)\b(earnings|outlook beat|after.?hours)\b", text):
         return True
+    if _is_private_company_market_question(text):
+        return True
     return False
 
 
@@ -306,6 +323,55 @@ _FOLLOW_UP_NEWS_RE = re.compile(
     r"clarify|explain that|tell me more|that story|interim|go on"
     r")\b"
 )
+_TOPIC_FOLLOW_UP_RE = re.compile(
+    r"(?i)\b(?:what about|how about|tell me more about)\b"
+)
+_TOPIC_TOKEN_STOP = frozenset(
+    {
+        "about",
+        "that",
+        "this",
+        "those",
+        "what",
+        "with",
+        "from",
+        "your",
+        "have",
+        "does",
+        "did",
+        "the",
+        "and",
+        "for",
+        "are",
+        "was",
+        "how",
+        "story",
+        "stories",
+        "headline",
+        "headlines",
+        "news",
+        "latest",
+        "recent",
+        "there",
+        "they",
+        "them",
+        "when",
+        "where",
+        "which",
+        "would",
+        "could",
+        "should",
+        "just",
+        "like",
+        "mean",
+        "said",
+    }
+)
+_CLAIM_PLAIN_LABEL: dict[str, str] = {
+    "bankruptcy": "bankruptcy or a Chapter 11 filing",
+    "delisting": "delisting or removal from a major exchange",
+    "market_cap_halved": "market cap being wiped out or cut roughly in half",
+}
 _LIVE_THREAD_MARKERS = (
     "worth a look",
     "— live news",
@@ -357,6 +423,11 @@ def is_live_news_follow_up(
         return False
     if wants_live_news(message):
         return False
+    if _TOPIC_FOLLOW_UP_RE.search(message):
+        for turn in reversed(history[-LIVE_HISTORY_TURNS:]):
+            blob = (turn.get("content") or "").lower()
+            if any(marker in blob for marker in _LIVE_THREAD_MARKERS):
+                return True
     if not _FOLLOW_UP_NEWS_RE.search(message) and len(message.split()) > 14:
         return False
     for turn in reversed(history[-LIVE_HISTORY_TURNS:]):
@@ -373,19 +444,24 @@ def should_route_live_news(
     return wants_live_news(message) or is_live_news_follow_up(message, history)
 
 
-def _prefer_fast_headlines_only(
+def _needs_claim_synthesis(question: str) -> bool:
+    return bool(_CLAIM_VERIFY_RE.search(question or ""))
+
+
+def _use_zero_llm_live_news(
     question: str,
     history: list[dict[str, str]] | None,
 ) -> bool:
-    """One LLM (Market expert only) — harness voice, not a second synthesis call."""
-    if not _is_simple_headlines_ask(question):
+    """Headline Q&A without Gemini — claims / verify questions are the exception."""
+    if _needs_claim_synthesis(question):
         return False
+    if _is_simple_headlines_ask(question):
+        return True
+    if _HEADLINE_CHAT_RE.search(question or ""):
+        return True
     if is_live_news_follow_up(question, history):
-        return False
-    for turn in history or []:
-        if turn.get("role") == "assistant" and (turn.get("content") or "").strip():
-            return False
-    return True
+        return True
+    return False
 
 
 def _format_history_for_prompt(history: list[dict[str, str]] | None) -> str:
@@ -406,6 +482,106 @@ def _normalize_phrase(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
 
 
+def _private_company_focus_name(message: str) -> str | None:
+    q_norm = _normalize_phrase(message or "")
+    if "anthropic" in q_norm:
+        return "anthropic"
+    return None
+
+
+def _is_private_company_market_question(message: str) -> bool:
+    """IPO / listing asks about a private name — not a bogus IPO ticker."""
+    if not _PRIVATE_CO_EVENT_RE.search(message or ""):
+        return False
+    return _private_company_focus_name(message) is not None
+
+
+def _resolve_ticker_private_company_market(
+    message: str,
+    history: list[dict[str, str]] | None,
+    *,
+    active_ticker: str | None,
+) -> str | None:
+    """Pick a feed that may mention the private name — not merely the last symbol in chat."""
+    focus = _private_company_focus_name(message)
+    if not focus:
+        return active_ticker.upper() if active_ticker else None
+
+    hist = history or []
+    for i in range(len(hist) - 1, -1, -1):
+        turn = hist[i]
+        if (turn.get("role") or "").strip().lower() != "assistant":
+            continue
+        if focus not in _normalize_phrase(turn.get("content") or ""):
+            continue
+        for j in range(i - 1, -1, -1):
+            if (hist[j].get("role") or "").strip().lower() != "user":
+                continue
+            ticker = resolve_ticker_from_question(hist[j].get("content") or "")
+            if ticker:
+                return ticker
+
+    if focus == "anthropic":
+        for turn in reversed(hist):
+            if (turn.get("role") or "").strip().lower() != "user":
+                continue
+            ticker = resolve_ticker_from_question(turn.get("content") or "")
+            if ticker == "NVDA":
+                return "NVDA"
+
+    for turn in reversed(hist):
+        if (turn.get("role") or "").strip().lower() != "user":
+            continue
+        ticker = resolve_ticker_from_question(turn.get("content") or "")
+        if ticker:
+            return ticker
+
+    if active_ticker:
+        return active_ticker.upper()
+    return None
+
+
+def _private_company_market_reply(
+    *,
+    ticker: str,
+    question: str,
+    news: dict[str, Any],
+    sentiment: str,
+) -> str:
+    del sentiment
+    focus = _private_company_focus_name(question) or "that company"
+    titles = _headline_titles(news, max_items=10)
+    matched = [t for t in titles if focus in t.lower()]
+    q_norm = _normalize_phrase(question)
+    ipo_ask = "ipo" in q_norm or bool(_PRIVATE_CO_EVENT_RE.search(question or ""))
+    if not matched:
+        opening = (
+            f"**No** — nothing in this **{ticker}** headline pull mentions "
+            f"**{focus.title()}** going public"
+            + (" or an IPO." if ipo_ask else ".")
+            + f" {focus.title()} remains private; stories below are **{ticker}** coverage."
+        )
+        show = titles
+        max_items = 4
+    else:
+        if ipo_ask:
+            opening = (
+                f"**No IPO** — this pull mentions **{focus.title()}** in headline text "
+                f"but not a listing or public debut. "
+            ) + _topic_focus_opening(matched, [focus])
+        else:
+            opening = _topic_focus_opening(matched, [focus])
+        show = matched
+        max_items = min(6, max(3, len(matched)))
+    body = format_live_news_reply(
+        ticker=ticker,
+        summary=opening,
+        headline_titles=show,
+        max_items=max_items,
+    )
+    return clean_assistant_markdown(f"{body}\n\n{_live_next_chips(ticker)}")
+
+
 def resolve_ticker_from_context(
     message: str,
     history: list[dict[str, str]] | None = None,
@@ -413,6 +589,13 @@ def resolve_ticker_from_context(
     active_ticker: str | None = None,
 ) -> str | None:
     """Ticker from question, then recent chat, then active desk view."""
+    if _is_private_company_market_question(message):
+        return _resolve_ticker_private_company_market(
+            message,
+            history,
+            active_ticker=active_ticker,
+        )
+
     ticker = resolve_ticker_from_question(message)
     if ticker:
         return ticker
@@ -498,6 +681,188 @@ def _news_fetch_plan(question: str) -> tuple[int, int]:
     return limit, lookback
 
 
+_HEADLINE_BULLISH = re.compile(
+    r"(?i)\b(beat|surge|soar|rally|record high|upgrade|wins?|wins|expands|growth)\b"
+)
+_HEADLINE_BEARISH = re.compile(
+    r"(?i)\b(miss|plunge|slump|downgrade|layoff|bankrupt|delist|fired|probe|lawsuit)\b"
+)
+
+
+def _headline_sentiment(titles: list[str]) -> str:
+    bull = bear = 0
+    for title in titles:
+        if _HEADLINE_BULLISH.search(title):
+            bull += 1
+        if _HEADLINE_BEARISH.search(title):
+            bear += 1
+    if bull > bear + 1:
+        return "BULLISH"
+    if bear > bull + 1:
+        return "BEARISH"
+    return "MIXED"
+
+
+def _claims_in_question(question: str) -> list[str]:
+    q = question or ""
+    found: list[str] = []
+    if re.search(r"(?i)\bbankrupt", q):
+        found.append("bankruptcy")
+    if re.search(r"(?i)\bdelist", q):
+        found.append("delisting")
+    if re.search(r"(?i)\b(market\s*cap|wiped|halved|cut in half)\b", q):
+        found.append("market_cap_halved")
+    return found
+
+
+def _headlines_affirm_claim(claim: str, titles: list[str]) -> bool:
+    blob = " ".join(titles).lower()
+    if claim == "bankruptcy":
+        return bool(re.search(r"\b(bankrupt|bankruptcy|chapter\s*11)\b", blob))
+    if claim == "delisting":
+        return bool(re.search(r"\b(delist(?:ed|ing)?|delisting)\b", blob))
+    if claim == "market_cap_halved":
+        return bool(
+            re.search(
+                r"(?i)(market\s*cap[^.]{0,40}(half|halv|wiped|50\s*%)|"
+                r"wiped out|cut in half|halved)",
+                blob,
+            )
+        )
+    return False
+
+
+def _any_headline_affirms_claims(claims: list[str], titles: list[str]) -> bool:
+    return any(_headlines_affirm_claim(c, titles) for c in claims)
+
+
+def _topic_keywords_for_reply(question: str | None) -> list[str]:
+    """Narrow headlines only on explicit topic follow-ups (what about Cybercab…)."""
+    q = (question or "").strip()
+    if not q or not _TOPIC_FOLLOW_UP_RE.search(q):
+        return []
+    return _topic_keywords_from_question(q)
+
+
+def _topic_keywords_from_question(question: str) -> list[str]:
+    q = (question or "").strip()
+    ql = q.lower()
+    keywords: list[str] = []
+    for m in re.finditer(r"«([^»]+)»|'([^']+)'|\"([^\"]+)\"", q):
+        phrase = next(g for g in m.groups() if g)
+        for w in re.findall(r"[a-z0-9]{3,}", phrase.lower()):
+            if w not in _TOPIC_TOKEN_STOP:
+                keywords.append(w)
+    m = re.search(
+        r"(?i)(?:what about|how about|tell me more about)\s+(?:the\s+)?(.+)",
+        ql,
+    )
+    if m:
+        tail = re.sub(r"\s*(stories?|news|headlines?)\s*\??\s*$", "", m.group(1))
+        for w in re.findall(r"[a-z0-9]{3,}", tail):
+            if w not in _TOPIC_TOKEN_STOP and w not in keywords:
+                keywords.append(w)
+    for w in re.findall(r"\b([A-Z][a-z]{2,}|[a-z]{4,})\b", q):
+        wl = w.lower()
+        if wl not in _TOPIC_TOKEN_STOP and wl not in keywords:
+            keywords.append(wl)
+    return keywords[:6]
+
+
+def _filter_titles_by_keywords(
+    titles: list[str],
+    keywords: list[str],
+) -> tuple[list[str], list[str]]:
+    if not keywords:
+        return titles, []
+    matched: list[str] = []
+    rest: list[str] = []
+    hit_kw: set[str] = set()
+    for title in titles:
+        tl = title.lower()
+        hits = [k for k in keywords if k in tl]
+        if hits:
+            matched.append(title)
+            hit_kw.update(hits)
+        else:
+            rest.append(title)
+    if matched:
+        return matched + rest, sorted(hit_kw)
+    return titles, []
+
+
+def _topic_focus_opening(matched: list[str], keywords: list[str]) -> str:
+    if not matched:
+        return "No headlines in this pull match that topic by title."
+    focus = keywords[0] if keywords else "that topic"
+    lead = matched[0]
+    if len(lead) > 88:
+        lead = lead[:85] + "…"
+    if len(matched) == 1:
+        return (
+            f"**1** headline in this pull matches **{focus}**: «{lead}»."
+        )
+    extra = len(matched) - 1
+    return (
+        f"**{len(matched)}** headlines mention **{focus}** "
+        f"(lead: «{lead}»; {extra} more in the list)."
+    )
+
+
+def _deterministic_claim_reply(
+    *,
+    ticker: str,
+    question: str,
+    news: dict[str, Any],
+    titles: list[str] | None = None,
+) -> str:
+    titles = titles or _headline_titles(news, max_items=10)
+    claims = _claims_in_question(question)
+    if claims:
+        labels = [_CLAIM_PLAIN_LABEL.get(c, c) for c in claims]
+        if len(labels) == 1:
+            opening = (
+                f"**No** — none of the headlines in this live pull support "
+                f"{labels[0]}. Other themes dominate; closest stories below."
+            )
+        else:
+            opening = (
+                "**No** — this headline pull does not support the scenario in your "
+                f"question ({'; '.join(labels)})."
+            )
+    else:
+        opening = (
+            "**No** — nothing in this live headline pull backs up that claim "
+            "as stated. Closest stories below."
+        )
+    body = format_live_news_reply(
+        ticker=ticker,
+        summary=opening,
+        headline_titles=titles,
+        max_items=4,
+    )
+    return clean_assistant_markdown(f"{body}\n\n{_live_next_chips(ticker)}")
+
+
+def _chat_opening_from_headlines(
+    ticker: str,
+    titles: list[str],
+    sentiment: str,
+) -> str:
+    sym = (ticker or "").upper()
+    if not titles:
+        return f"No headline themes returned for {sym} in this fetch."
+    lead = titles[0]
+    if len(lead) > 96:
+        lead = lead[:93] + "…"
+    extra = max(0, len(titles) - 1)
+    tail = f" Plus {extra} other stories in this pull." if extra else ""
+    return (
+        f"Headlines center on «{lead}».{tail} "
+        f"Tone from wording feels {sentiment.lower()}."
+    )
+
+
 def _headline_titles(
     news: dict[str, Any],
     *,
@@ -548,6 +913,35 @@ def _format_headline_bullets(
     return bullets, ceo_block
 
 
+def _zero_llm_live_reply(
+    *,
+    ticker: str,
+    sentiment: str,
+    news: dict[str, Any],
+    question: str | None = None,
+    title_list: list[str] | None = None,
+) -> str:
+    titles = title_list if title_list is not None else _headline_titles(news, max_items=10)
+    keywords = _topic_keywords_for_reply(question)
+    ordered, hit_kw = _filter_titles_by_keywords(titles, keywords)
+    matched = [t for t in ordered if any(k in t.lower() for k in hit_kw)] if hit_kw else []
+    if hit_kw and matched:
+        opening = _topic_focus_opening(matched, hit_kw)
+        display = matched
+        max_items = min(6, max(3, len(matched)))
+    else:
+        opening = _chat_opening_from_headlines(ticker, ordered, sentiment)
+        display = ordered
+        max_items = 6
+    body = format_live_news_reply(
+        ticker=ticker,
+        summary=opening,
+        headline_titles=display,
+        max_items=max_items,
+    )
+    return clean_assistant_markdown(f"{body}\n\n{_live_next_chips(ticker)}")
+
+
 def _deterministic_news_reply(
     *,
     ticker: str,
@@ -556,21 +950,29 @@ def _deterministic_news_reply(
     news: dict[str, Any],
     compact: bool = False,
     question: str | None = None,
+    title_list: list[str] | None = None,
 ) -> str:
-    del compact, question
-    titles = _headline_titles(news, max_items=8)
-    body = harness_to_chat_reply(
+    del compact, note
+    q = (question or "").strip()
+    if _needs_claim_synthesis(q):
+        return _deterministic_claim_reply(
+            ticker=ticker,
+            question=q,
+            news=news,
+            titles=title_list,
+        )
+    return _zero_llm_live_reply(
         ticker=ticker,
-        harness_note=note,
-        headline_titles=titles,
         sentiment=sentiment,
+        news=news,
+        question=question,
+        title_list=title_list,
     )
-    return clean_assistant_markdown(f"{body}\n\n{_live_next_chips(ticker)}")
 
 
 def _is_simple_headlines_ask(question: str) -> bool:
     q = (question or "").strip()
-    if not q or _NEEDS_SYNTH_RE.search(q):
+    if not q or _needs_claim_synthesis(q):
         return False
     return bool(_SIMPLE_HEADLINES_ASK_RE.match(q))
 
@@ -637,15 +1039,26 @@ def _synthesize_from_agent(
     if len(note_clip) > 900:
         note_clip = note_clip[:899] + "…"
     hist_blob = _format_history_for_prompt(history)
+    claim_block = ""
+    if _needs_claim_synthesis(question):
+        claim_block = """
+CLAIM CHECK (required):
+- First line after **{ticker}**: start with **Yes**, **No**, or **Unclear** — does this live pull support the user's claim?
+- If **No**, say clearly nothing in the listed headlines supports it; do not substitute a generic theme essay.
+- Cite only headline facts; no invented events.
+""".format(
+            ticker=ticker
+        )
     system = f"""Desk assistant — concise chat answer about {ticker} from LIVE NEWS only.
-
+{claim_block}
 STYLE:
-- **{ticker}** then 2–3 short sentences (themes only).
+- **{ticker}** then 2–3 short sentences (themes only) unless CLAIM CHECK applies (then Yes/No first).
 - **Worth a look** — 4–6 bullets; label: one-line fact (e.g. "Berlin expansion: …").
 - No provider names, timestamps, disclaimers, or stock phrases like "navigating a period of intense".
 - Use CONVERSATION only when the user is following up.
 
 RULES: Only facts in the expert note and headline list. No new numbers. No buy/sell.
+Never mention CEO departures, receivables, or deals unless a headline line states them.
 End with:
 {_live_next_chips(ticker)}
 """
@@ -666,23 +1079,25 @@ End with:
 
 def _synthesize_with_timeout(**kwargs: Any) -> str | None:
     timeout = max(5.0, LIVE_NEWS_SYNTH_TIMEOUT_SEC)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        fut = pool.submit(_synthesize_from_agent, **kwargs)
-        try:
-            return fut.result(timeout=timeout)
-        except concurrent.futures.TimeoutError:
-            log_event(
-                logger,
-                "live_news_synth_timeout",
-                level=logging.WARNING,
-                step="research_live_news",
-                status="timeout",
-                data={
-                    "ticker": kwargs.get("ticker"),
-                    "timeout_sec": timeout,
-                },
-            )
-            return None
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    fut = pool.submit(_synthesize_from_agent, **kwargs)
+    try:
+        return fut.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        log_event(
+            logger,
+            "live_news_synth_timeout",
+            level=logging.WARNING,
+            step="research_live_news",
+            status="timeout",
+            data={
+                "ticker": kwargs.get("ticker"),
+                "timeout_sec": timeout,
+            },
+        )
+        return None
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _reply_fails_headline_grounding(reply: str, titles: list[str]) -> bool:
@@ -701,6 +1116,17 @@ def _reply_fails_headline_grounding(reply: str, titles: list[str]) -> bool:
         return True
     if "bankrupt" in low and "bankrupt" not in blob:
         return True
+    if ("resign" in low or "departure" in low or "interim ceo" in low) and (
+        "resign" not in blob and "depart" not in blob and "interim" not in blob
+    ):
+        return True
+    if "receivable" in low and "receivable" not in blob:
+        return True
+    if "anthropic" in low and "anthropic" not in blob:
+        return True
+    for m in re.finditer(r"\$\s*(\d+(?:\.\d+)?)\s*b", low):
+        if m.group(1) not in blob and "billion" not in blob:
+            return True
     return False
 
 
@@ -768,8 +1194,8 @@ def answer_live_news_question(
         return hit
 
     fetch = news_fetcher or get_news
-    harness_fn = news_harness or run_news_harness
     client = llm if llm is not None else get_chat_llm()
+    llm_calls = 0
 
     try:
         fetch_limit, lookback = _news_fetch_plan(text)
@@ -812,54 +1238,105 @@ def answer_live_news_question(
         }
 
     news_raw = format_news_for_prompt(news)
-    try:
-        harness = harness_fn(
-            ticker=ticker,
-            news=news,
-            news_raw=news_raw,
-            llm=client,
-        )
-    except Exception as exc:  # noqa: BLE001
-        log_event(
-            logger,
-            "live_news_harness_failed",
-            level=logging.WARNING,
-            step="research_live_news",
-            status="error",
-            data={"ticker": ticker, "error": str(exc)[:240]},
-        )
-        harness = {
-            "news_summary": news_raw[:1200],
-            "news_sentiment": "MIXED",
-            "news_repaired": True,
-        }
-
-    tools_used.append("news_agent")
-    sentiment = str(harness.get("news_sentiment") or "—")
-    agent_note = str(harness.get("news_summary") or "")
+    title_list = _headline_titles(news, max_items=10)
+    sentiment = _headline_sentiment(title_list)
+    context_note = _chat_opening_from_headlines(ticker, title_list, sentiment)
     titles, urls = _article_allowlist(news)
+    news_fetch_cache_hit = bool(news.get("cache_hit"))
 
-    # Simple “latest headlines” asks: harness note + bullets is enough (~1 LLM).
-    # Claim / judgment questions still get a Research synthesis pass.
-    if _prefer_fast_headlines_only(text, history):
-        reply = _deterministic_news_reply(
-            ticker=ticker,
-            sentiment=sentiment,
-            note=agent_note,
-            news=news,
-            question=text,
-        )
-        out = {
-            "reply": reply,
+    def _out_base(**extra: Any) -> dict[str, Any]:
+        base = {
             "out_of_scope": False,
             "mode": "research",
-            "tools_used": tools_used,
-            "repaired": False,
             "path": "live_news",
             "ticker": ticker,
-            "fast_path": "harness_voice",
             "cache_hit": False,
+            "news_fetch_cache_hit": news_fetch_cache_hit,
+            "llm_calls": llm_calls,
         }
+        base.update(extra)
+        return base
+
+    if _is_private_company_market_question(text):
+        reply = _private_company_market_reply(
+            ticker=ticker,
+            question=text,
+            news=news,
+            sentiment=sentiment,
+        )
+        out = _out_base(
+            reply=reply,
+            tools_used=tools_used,
+            repaired=False,
+            fast_path="private_co_zero_llm",
+            llm_calls=0,
+        )
+        _cache_put(cache_key, reply, out)
+        log_event(
+            logger,
+            "live_news_done",
+            step="research_live_news",
+            status="ok",
+            data={
+                "ticker": ticker,
+                "tools_used": tools_used,
+                "fast_path": "private_co_zero_llm",
+                "news_fetch_cache_hit": news_fetch_cache_hit,
+                "llm_calls": 0,
+            },
+        )
+        return out
+
+    # Fact-check claims when headlines do not contain supporting terms (0 LLM).
+    if _needs_claim_synthesis(text):
+        claims = _claims_in_question(text)
+        if claims and not _any_headline_affirms_claims(claims, title_list):
+            reply = _deterministic_claim_reply(
+                ticker=ticker,
+                question=text,
+                news=news,
+                titles=title_list,
+            )
+            out = _out_base(
+                reply=reply,
+                tools_used=tools_used,
+                repaired=False,
+                fast_path="claim_zero_llm",
+                llm_calls=0,
+            )
+            _cache_put(cache_key, reply, out)
+            log_event(
+                logger,
+                "live_news_done",
+                step="research_live_news",
+                status="ok",
+                data={
+                    "ticker": ticker,
+                    "tools_used": tools_used,
+                    "claims": claims,
+                    "fast_path": "claim_zero_llm",
+                    "news_fetch_cache_hit": news_fetch_cache_hit,
+                    "llm_calls": 0,
+                },
+            )
+            return out
+
+    # Simple headline asks — deterministic assistant voice, no LLM.
+    if _use_zero_llm_live_news(text, history):
+        reply = _zero_llm_live_reply(
+            ticker=ticker,
+            sentiment=sentiment,
+            news=news,
+            question=text,
+            title_list=title_list,
+        )
+        out = _out_base(
+            reply=reply,
+            tools_used=tools_used,
+            repaired=False,
+            fast_path="zero_llm",
+            llm_calls=0,
+        )
         _cache_put(cache_key, reply, out)
         log_event(
             logger,
@@ -872,25 +1349,48 @@ def answer_live_news_question(
                 "sentiment": sentiment,
                 "repaired": False,
                 "articles": len(news.get("articles") or []),
-                "fast_path": "harness_voice",
+                "fast_path": "zero_llm",
+                "news_fetch_cache_hit": news_fetch_cache_hit,
+                "llm_calls": 0,
             },
         )
         return out
 
     repaired = False
+    llm_calls = 1
     try:
         raw = _synthesize_with_timeout(
             question=text,
             ticker=ticker,
             sentiment=sentiment,
-            agent_note=agent_note,
+            agent_note=news_raw[:1200],
             news=news,
             history=history,
             llm=client,
         )
         if raw is None:
-            raw = ""
-            repaired = True
+            reply = _deterministic_news_reply(
+                ticker=ticker,
+                sentiment=sentiment,
+                note=context_note,
+                news=news,
+                question=text,
+                title_list=title_list,
+            )
+            fb_fast = (
+                "claim_zero_llm"
+                if _needs_claim_synthesis(text)
+                else "zero_llm"
+            )
+            out = _out_base(
+                reply=reply,
+                tools_used=tools_used,
+                repaired=True,
+                fast_path=fb_fast,
+                llm_calls=0,
+            )
+            _cache_put(cache_key, reply, out)
+            return out
         cleaned = ensure_next_chips(
             polish_research_markdown(
                 strip_brochure_voice(strip_tool_name_leaks(raw))
@@ -905,10 +1405,10 @@ def answer_live_news_question(
             reply = _deterministic_news_reply(
                 ticker=ticker,
                 sentiment=sentiment,
-                note=agent_note,
+                note=context_note,
                 news=news,
-                compact=_is_simple_headlines_ask(text),
                 question=text,
+                title_list=title_list,
             )
             log_event(
                 logger,
@@ -919,8 +1419,18 @@ def answer_live_news_question(
             )
         else:
             reply = cleaned
-            # Ensure live/source framing is present.
-            if not re.search(rf"\*\*{re.escape(ticker)}\*\*", reply, re.I):
+            if _needs_claim_synthesis(text) and not re.search(
+                r"(?i)\*\*(yes|no|unclear)\*\*", reply
+            ):
+                repaired = True
+                reply = _deterministic_claim_reply(
+                    ticker=ticker,
+                    question=text,
+                    news=news,
+                    titles=title_list,
+                )
+            elif not re.search(rf"\*\*{re.escape(ticker)}\*\*", reply, re.I):
+                # Ensure live/source framing is present.
                 reply = f"**{ticker}**\n\n{reply}"
                 reply = ensure_next_chips(reply)
                 repaired = True
@@ -936,9 +1446,10 @@ def answer_live_news_question(
         reply = _deterministic_news_reply(
             ticker=ticker,
             sentiment=sentiment,
-            note=agent_note,
+            note=context_note,
             news=news,
             question=text,
+            title_list=title_list,
         )
         repaired = True
 
@@ -954,17 +1465,16 @@ def answer_live_news_question(
             "sentiment": sentiment,
             "repaired": repaired,
             "articles": len(news.get("articles") or []),
+            "llm_calls": llm_calls,
+            "news_fetch_cache_hit": news_fetch_cache_hit,
         },
     )
-    out = {
-        "reply": reply,
-        "out_of_scope": False,
-        "mode": "research",
-        "tools_used": tools_used,
-        "repaired": repaired,
-        "path": "live_news",
-        "ticker": ticker,
-        "cache_hit": False,
-    }
+    out = _out_base(
+        reply=reply,
+        tools_used=tools_used,
+        repaired=repaired,
+        fast_path="synth_one_llm" if llm_calls else "repair_zero_llm",
+        llm_calls=llm_calls,
+    )
     _cache_put(cache_key, reply, out)
     return out

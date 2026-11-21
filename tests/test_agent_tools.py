@@ -1,6 +1,15 @@
 from __future__ import annotations
 
+import pytest
+
 from src.agents import tools
+
+
+@pytest.fixture(autouse=True)
+def _clear_news_fetch_cache():
+    tools.clear_news_fetch_cache()
+    yield
+    tools.clear_news_fetch_cache()
 
 
 def test_get_forecast_missing_model(monkeypatch, tmp_path):
@@ -152,6 +161,35 @@ def test_get_news_drops_irrelevant_yahoo_blurbs(monkeypatch):
     assert result["filtered_out"] == 2
 
 
+def test_get_news_fetch_cache_hit(monkeypatch):
+    import src.agents.tools as tools
+
+    tools.clear_news_fetch_cache()
+    calls = {"n": 0}
+
+    def _fake_yahoo(ticker, limit=5):
+        calls["n"] += 1
+        return [
+            {
+                "source": "yahoo",
+                "date": "2026-09-08",
+                "headline": f"{ticker.upper()} partnership deal",
+                "summary": "ok",
+                "url": "https://example.com/x",
+            }
+        ]
+
+    monkeypatch.setattr(tools, "FINNHUB_API_KEY", None)
+    monkeypatch.setattr(tools, "_news_from_yahoo", _fake_yahoo)
+    monkeypatch.setattr(tools, "NEWS_FETCH_CACHE_TTL_SEC", 120)
+
+    first = tools.get_news("TSLA", limit=6, include_peers=False)
+    second = tools.get_news("TSLA", limit=6, include_peers=False)
+    assert first.get("cache_hit") is False
+    assert second.get("cache_hit") is True
+    assert calls["n"] == 1
+
+
 def test_get_news_unavailable_when_nothing_relevant(monkeypatch):
     monkeypatch.setattr(tools, "FINNHUB_API_KEY", None)
     monkeypatch.setattr(
@@ -167,8 +205,7 @@ def test_get_news_unavailable_when_nothing_relevant(monkeypatch):
             }
         ],
     )
-
-    result = tools.get_news("NVDA")
+    result = tools.get_news("NVDA", include_peers=False)
 
     assert result["status"] == "error"
     assert result["error"] == "no_ticker_relevant_headlines"
